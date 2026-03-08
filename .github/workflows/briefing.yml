@@ -2,7 +2,7 @@ name: Daily News Briefing
 
 on:
   schedule:
-    - cron: '30 16 * * *'  # 11:30am EST (UTC-5)
+    - cron: '30 15 * * *'  # 11:30am EDT (UTC-4), update to '30 16 * * *' when clocks go back in November
   workflow_dispatch:         # allows manual trigger from GitHub website
 
 jobs:
@@ -24,4 +24,6 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: python briefing.py

@@ -33,7 +33,7 @@ SMTP_USER         = os.getenv("SMTP_USER")
 SMTP_PASSWORD     = os.getenv("SMTP_PASSWORD")
 EMAIL_TO          = os.getenv("EMAIL_TO")
 
-TARGET_WORD_COUNT = 750
+TARGET_WORD_COUNT = 1000
 HOURS_BACK        = 24
 
 # ── News sources ──────────────────────────────────────────────────────────────
@@ -121,9 +121,13 @@ def items_to_text(items):
 
 PRESCREEN_PROMPT = (
     "You are a senior news editor. Below is a numbered list of headlines from multiple sources.\n"
-    "Select the 40-50 most globally significant and newsworthy stories from the last 24 hours.\n"
-    "Prioritise: major geopolitical events, conflicts, elections, economic shifts, South Asia/Pakistan.\n"
-    "Ignore: celebrity news, sports, lifestyle, weather, minor local stories, near-duplicates.\n\n"
+    "Select 40-50 headlines for a daily global briefing, optimising for TWO things equally:\n"
+    "1. IMPORTANCE: major geopolitical events, conflicts, elections, economic shifts.\n"
+    "2. BREADTH: ensure good geographic spread. Do not over-select any single region or story cluster.\n"
+    "   Aim for coverage across: Americas, Europe, Middle East, Africa, South/Southeast Asia, East Asia.\n"
+    "   If many headlines cover the same story (e.g. US/Israel/Iran), pick only the 2-3 best ones.\n"
+    "   Always include at least one story from South Asia or Pakistan if present.\n"
+    "Ignore: celebrity news, sports, lifestyle, weather, minor local stories.\n\n"
     "Return ONLY a JSON array of selected index numbers, e.g. [0, 3, 7, 12, ...].\n"
     "No explanation, no preamble - just the JSON array."
 )
