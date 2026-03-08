@@ -39,22 +39,27 @@ HOURS_BACK        = 24
 # ── News sources ──────────────────────────────────────────────────────────────
 
 RSS_FEEDS = {
+    # Global wires
     "BBC World":          "http://feeds.bbci.co.uk/news/world/rss.xml",
-    "BBC Asia":           "http://feeds.bbci.co.uk/news/world/asia/rss.xml",
     "Al Jazeera":         "https://www.aljazeera.com/xml/rss/all.xml",
     "NYT World":          "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
-    "Dawn Pakistan":      "https://www.dawn.com/feeds/home",
-    "Reuters":            "https://feeds.reuters.com/reuters/worldNews",
-    "AP Top News":        "https://rsshub.app/apnews/topics/apf-topnews",
-    "AP World":           "https://rsshub.app/apnews/topics/apf-worldnews",
-    "FT World":           "https://www.ft.com/world?format=rss",
     "The Guardian":       "https://www.theguardian.com/world/rss",
-    "NPR World":          "https://feeds.npr.org/1004/rss.xml",
-    "Democracy Now":      "https://www.democracynow.org/democracynow.rss",
-    "The Hindu":          "https://www.thehindu.com/news/international/?service=rss",
+    "FT World":           "https://www.ft.com/world?format=rss",
+    # South Asia
+    "Dawn Pakistan":      "https://www.dawn.com/feeds/home",
+    # Middle East
     "Middle East Eye":    "https://www.middleeasteye.net/rss",
-    "Foreign Policy":     "https://foreignpolicy.com/feed/",
+    # Europe
+    "BBC Europe":         "http://feeds.bbci.co.uk/news/world/europe/rss.xml",
+    "Deutsche Welle":     "https://rss.dw.com/rdf/rss-en-world",
     "Le Monde (English)": "https://www.lemonde.fr/en/rss/une.xml",
+    # Latin America
+    "Mercopress":         "https://en.mercopress.com/rss/latin-america",
+    # Africa
+    "Africanews":         "https://www.africanews.com/feed/rss",
+    # East Asia / Southeast Asia
+    "Nikkei Asia":        "https://asia.nikkei.com/rss/feed/nar",
+    "SCMP":               "https://www.scmp.com/rss/91/feed",
 }
 
 # ── Step 1: Fetch headlines from the last 24 hours ────────────────────────────
@@ -120,14 +125,24 @@ def items_to_text(items):
 # -- Step 2a: Pre-screen with Claude Haiku (pass 1) --------------------------
 
 PRESCREEN_PROMPT = (
-    "You are a senior news editor. Below is a numbered list of headlines from multiple sources.\n"
-    "Select 40-50 headlines for a daily global briefing, optimising for TWO things equally:\n"
-    "1. IMPORTANCE: major geopolitical events, conflicts, elections, economic shifts.\n"
-    "2. BREADTH: ensure good geographic spread. Do not over-select any single region or story cluster.\n"
-    "   Aim for coverage across: Americas, Europe, Middle East, Africa, South/Southeast Asia, East Asia.\n"
-    "   If many headlines cover the same story (e.g. US/Israel/Iran), pick only the 2-3 best ones.\n"
-    "   Always include at least one story from South Asia or Pakistan if present.\n"
+    "You are a senior news editor selecting stories for a daily global briefing.\n"
+    "Below is a numbered list of headlines. Each headline includes a timestamp.\n\n"
+    "RULE 1 - RECENCY: Only select headlines with a timestamp from the last 24 hours.\n"
+    "   If a headline has no timestamp or is marked 'recent', include it.\n"
+    "   If a headline has a timestamp older than 24 hours, exclude it.\n\n"
+    "RULE 2 - IMPORTANCE: From the eligible headlines, prioritise:\n"
+    "   - Major geopolitical events, conflicts, elections, diplomatic shifts\n"
+    "   - Economic developments: markets, trade, sanctions, inequality, labour policy\n"
+    "   - Class struggle and social movements: strikes, labour disputes, union activity,\n"
+    "     protests, uprisings, riots, occupations, and popular mobilisations of any kind\n"
+    "   - State power and its contestation: coups, crackdowns, mass movements, repression\n"
+    "   - Corporate power, privatisation, austerity, and their social consequences\n\n"
+    "RULE 3 - BREADTH: Ensure geographic spread across regions.\n"
+    "   Aim for: Americas, Europe, Middle East, Africa, South Asia, Southeast/East Asia.\n"
+    "   If many headlines cover the same story (e.g. US/Israel/Iran), pick at most 2-3.\n"
+    "   Always include at least one story from South Asia or Pakistan if one is present.\n\n"
     "Ignore: celebrity news, sports, lifestyle, weather, minor local stories.\n\n"
+    "Select 40-50 headlines total.\n"
     "Return ONLY a JSON array of selected index numbers, e.g. [0, 3, 7, 12, ...].\n"
     "No explanation, no preamble - just the JSON array."
 )
@@ -157,8 +172,19 @@ def prescreen_items(items, client):
 # -- Step 2b: Synthesize with Claude Opus (pass 2) ----------------------------
 
 SYSTEM_PROMPT = (
-    "You are the senior editor of a daily global news digest modelled on The Economist's "
-    "'The World in Brief' - terse, precise, globally minded, analytically sharp.\n\n"
+    "You are the senior editor of a daily global news digest. Your editorial model is\n"
+    "The Economist's 'The World in Brief' in form - terse, precise, globally minded -\n"
+    "but your analytical lens is materialist. You read the world through the logic of\n"
+    "capital, class, and power.\n\n"
+    "EDITORIAL VOICE:\n"
+    "- Analyse events in terms of underlying economic forces and class interests.\n"
+    "  Who benefits? Who bears the cost? What does this mean for working people?\n"
+    "- Take social movements, strikes, protests, uprisings, and popular mobilisations\n"
+    "  seriously as historical forces, not merely as disruptions to be managed.\n"
+    "- When covering state actions, note who the state is acting on behalf of.\n"
+    "- When covering economic news, connect it to material conditions and inequality.\n"
+    "- Be analytically sharp but never didactic. Let the facts carry the argument.\n"
+    "- Write like The Economist in style: short declarative sentences, no fluff.\n\n"
     "Return your response as a valid JSON object with this exact structure:\n"
     "{\n"
     "  \"lede\": \"Single sentence. The most important development in the world in the past 24 hours.\",\n"
@@ -166,14 +192,16 @@ SYSTEM_PROMPT = (
     "    {\n"
     "      \"headline\": \"Crisp headline, max 8 words.\",\n"
     "      \"region\": \"One of: South Asia, Middle East, United States, Europe, Africa, Asia, Latin America, Global\",\n"
-    "      \"body\": \"3-4 sentences. What happened, what it means, why it matters. Use inline attribution naturally at least once, e.g. The NYT reports that... or According to Al Jazeera...\",\n"
+    "      \"body\": \"3-4 sentences. What happened, what it means in terms of power and material interest,\n"
+    "               why it matters. Use inline attribution naturally at least once, e.g.\n"
+    "               The NYT reports that... or According to Al Jazeera...\",\n"
     "      \"sources\": [{ \"name\": \"Source Name\", \"url\": \"https://...\" }]\n"
     "    }\n"
     "  ]\n"
     "}\n\n"
     "RULES:\n"
     "- Cover 6-8 stories. Always include at least one from South Asia or Pakistan if newsworthy.\n"
-    "- Write like The Economist: no fluff, short declarative sentences, analytical not descriptive.\n"
+    "- Always include labour, social movement, or class struggle stories if present in the headlines.\n"
     "- Deduplicate: synthesise multiple sources on the same event into one account.\n"
     "- Every story must have at least one source URL in the sources array.\n"
     "- Do NOT include a closing or watch-for section.\n"
