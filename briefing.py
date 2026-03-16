@@ -232,14 +232,19 @@ def synthesize_briefing(items, client):
     log.info(f"Pass 2 - synthesizing {len(items)} curated headlines with Opus...")
     message = client.messages.create(
         model="claude-opus-4-5",
-        max_tokens=4000,
+        max_tokens=6000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = message.content[0].text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
-    briefing = json.loads(raw)
+    try:
+        briefing = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.error(f"JSON parse error: {e}")
+        log.error(f"Raw response (first 2000 chars):\n{raw[:2000]}")
+        raise
     log.info(f"Pass 2 done - {len(briefing.get('stories', []))} stories written")
     return briefing
 
