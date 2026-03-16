@@ -142,7 +142,7 @@ PRESCREEN_PROMPT = (
     "   If many headlines cover the same story (e.g. US/Israel/Iran), pick at most 2-3.\n"
     "   Always include at least one story from South Asia or Pakistan if one is present.\n\n"
     "Ignore: celebrity news, sports, lifestyle, weather, minor local stories.\n\n"
-    "Select 40-50 headlines total.\n"
+    "Select 55-65 headlines total.\n"
     "Return ONLY a JSON array of selected index numbers, e.g. [0, 3, 7, 12, ...].\n"
     "No explanation, no preamble - just the JSON array."
 )
@@ -180,10 +180,17 @@ SYSTEM_PROMPT = (
     "- Write with a materialist sensibility. Weave analysis of economic forces, class\n"
     "  interests, and power into the prose — don't announce it. The reader should feel\n"
     "  the lens in the choice of facts and framing, not in explicit declarations.\n"
+    "- Do not editorialize explicitly. Do not end paragraphs with a sentence that draws\n"
+    "  a moral or analytical conclusion for the reader. Trust the reported facts to speak.\n"
     "- Take social movements, strikes, protests, uprisings, and popular mobilisations\n"
     "  seriously as historical forces, not merely as disruptions to be managed.\n"
     "- Be analytically sharp but never didactic. Let the facts carry the argument.\n"
     "- Write like The Economist in style: short declarative sentences, no fluff.\n\n"
+    "CITATION STYLE — law review footnotes:\n"
+    "Each sentence in the body must end with a superscript footnote number in square\n"
+    "brackets, e.g. [1], [2]. At the end of the story, list the footnotes with the\n"
+    "source name and URL. Multiple sources for one sentence go in one footnote,\n"
+    "comma-separated. Sources may recur across footnotes with new numbers each time.\n\n"
     "Return your response as a valid JSON object with this exact structure:\n"
     "{\n"
     "  \"lede\": \"Single sentence. The most important development in the world in the past 24 hours.\",\n"
@@ -191,18 +198,22 @@ SYSTEM_PROMPT = (
     "    {\n"
     "      \"headline\": \"Crisp headline, max 8 words.\",\n"
     "      \"region\": \"One of: South Asia, Middle East, United States, Europe, Africa, Asia, Latin America, Global\",\n"
-    "      \"body\": \"3-4 sentences. What happened, what it means in terms of power and material interest,\n"
-    "               why it matters. Use inline attribution naturally at least once, e.g.\n"
-    "               The NYT reports that... or According to Al Jazeera...\",\n"
-    "      \"sources\": [{ \"name\": \"Source Name\", \"url\": \"https://...\" }]\n"
+    "      \"sentences\": [\n"
+    "        { \"text\": \"Sentence text ending with superscript e.g. [1]\", \"refs\": [1] },\n"
+    "        { \"text\": \"Next sentence.[2]\", \"refs\": [2] }\n"
+    "      ],\n"
+    "      \"footnotes\": [\n"
+    "        { \"n\": 1, \"name\": \"Source Name\", \"url\": \"https://...\" },\n"
+    "        { \"n\": 2, \"name\": \"Source Name\", \"url\": \"https://...\" }\n"
+    "      ]\n"
     "    }\n"
     "  ]\n"
     "}\n\n"
     "RULES:\n"
-    "- Cover 6-8 stories. Always include at least one from South Asia or Pakistan if newsworthy.\n"
+    "- Cover 9-12 stories. Always include at least one from South Asia or Pakistan if newsworthy.\n"
     "- Always include labour, social movement, or class struggle stories if present in the headlines.\n"
     "- Deduplicate: synthesise multiple sources on the same event into one account.\n"
-    "- Every story must have at least one source URL in the sources array.\n"
+    "- Every sentence must have at least one footnote reference.\n"
     "- Do NOT include a closing or watch-for section.\n"
     "- Return ONLY the JSON object. No preamble, no markdown fences, no extra text."
 )
@@ -252,27 +263,56 @@ def region_color(region):
             return color
     return "#555555"
 
-def build_source_links(sources):
-    if not sources:
+def render_footnotes(footnotes):
+    """Render a numbered footnote block with hyperlinks."""
+    if not footnotes:
         return ""
-    links = []
-    for s in sources:
-        name = s.get("name", "Source")
-        url  = s.get("url", "")
+    items = []
+    for fn in footnotes:
+        n    = fn.get("n", "?")
+        name = fn.get("name", "Source")
+        url  = fn.get("url", "")
         if url:
-            links.append(f'<a href="{url}" style="color:#cc0000;text-decoration:none;font-weight:600;">{name}</a>')
+            link = f'<a href="{url}" style="color:#cc0000;text-decoration:none;">{name}</a>'
         else:
-            links.append(f'<span style="color:#888;">{name}</span>')
-    return " &middot; ".join(links)
+            link = f'<span>{name}</span>'
+        items.append(f'<span style="margin-right:12px;">{n}.&nbsp;{link}</span>')
+    return "".join(items)
+
+def render_body(sentences):
+    """
+    Render sentences list into HTML, converting [N] markers to
+    superscript footnote anchors.
+    """
+    import re
+    if not sentences:
+        return ""
+    parts = []
+    for s in sentences:
+        text = s.get("text", "")
+        # Replace [N] with superscript
+        text = re.sub(
+            r'\[(\d+)\]',
+            r'<sup style="font-size:9px;color:#cc0000;font-family:Arial,sans-serif;">\1</sup>',
+            text
+        )
+        parts.append(text)
+    return " ".join(parts)
 
 def build_html(briefing, date_str):
     stories_html = ""
     stories      = briefing.get("stories", [])
     for i, story in enumerate(stories):
-        color        = region_color(story.get("region", ""))
-        source_links = build_source_links(story.get("sources", []))
-        is_last      = i == len(stories) - 1
-        border       = "" if is_last else "border-bottom:1px solid #e8e8e8;"
+        color   = region_color(story.get("region", ""))
+        is_last = i == len(stories) - 1
+        border  = "" if is_last else "border-bottom:1px solid #e8e8e8;"
+
+        body_html      = render_body(story.get("sentences", []))
+        footnotes_html = render_footnotes(story.get("footnotes", []))
+
+        # Fallback: if Opus returned old-style body/sources, render those
+        if not body_html and story.get("body"):
+            body_html = story.get("body", "")
 
         stories_html += f"""
         <div style="margin-bottom:26px;padding-bottom:24px;{border}">
@@ -289,11 +329,11 @@ def build_html(briefing, date_str):
                     color:#1a1a1a;font-family:Georgia,'Times New Roman',serif;">
             {story.get("headline", "")}
           </p>
-          <p style="margin:0 0 10px 0;font-size:14.5px;line-height:1.75;color:#2a2a2a;
+          <p style="margin:0 0 8px 0;font-size:14.5px;line-height:1.75;color:#2a2a2a;
                     font-family:Georgia,'Times New Roman',serif;">
-            {story.get("body", "")}
+            {body_html}
           </p>
-          {f'<p style="margin:0;font-size:12px;color:#888;font-family:Arial,sans-serif;">Sources: {source_links}</p>' if source_links else ""}
+          {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{footnotes_html}</p>' if footnotes_html else ""}
         </div>"""
 
     source_list  = ", ".join(RSS_FEEDS.keys())
