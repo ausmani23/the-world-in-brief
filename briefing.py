@@ -33,7 +33,7 @@ SMTP_USER         = os.getenv("SMTP_USER")
 SMTP_PASSWORD     = os.getenv("SMTP_PASSWORD")
 EMAIL_TO          = os.getenv("EMAIL_TO")
 
-TARGET_WORD_COUNT = 1000
+TARGET_WORD_COUNT = 1800
 HOURS_BACK        = 24
 
 # ── News sources ──────────────────────────────────────────────────────────────
@@ -202,6 +202,7 @@ SYSTEM_PROMPT = (
     "        { \"text\": \"Sentence text ending with superscript e.g. [1]\", \"refs\": [1] },\n"
     "        { \"text\": \"Next sentence.[2]\", \"refs\": [2] }\n"
     "      ],\n"
+    "      \"note\": \"Each story should have 3-4 sentences — same depth as before.\",\n"
     "      \"footnotes\": [\n"
     "        { \"n\": 1, \"name\": \"Source Name\", \"url\": \"https://...\" },\n"
     "        { \"n\": 2, \"name\": \"Source Name\", \"url\": \"https://...\" }\n"
@@ -224,6 +225,8 @@ def synthesize_briefing(items, client):
     prompt = (
         f"Today is {today_str}. "
         "The following items were pre-selected as the most newsworthy from the last 24 hours.\n\n"
+        "Each story should be approximately 120 words — 3-4 substantive sentences.\n"
+        "Do not shorten stories to fit more in. Depth per story is more important than total length.\n\n"
         "--- HEADLINES ---\n"
         f"{headlines}\n"
         "--- END ---\n\n"
