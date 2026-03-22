@@ -31,7 +31,8 @@ SMTP_HOST         = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT         = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER         = os.getenv("SMTP_USER")
 SMTP_PASSWORD     = os.getenv("SMTP_PASSWORD")
-EMAIL_TO          = os.getenv("EMAIL_TO")
+EMAIL_TO_RAW      = os.getenv("EMAIL_TO", "")
+EMAIL_TO          = [e.strip() for e in EMAIL_TO_RAW.split(",") if e.strip()]
 
 TARGET_WORD_COUNT = 1800
 HOURS_BACK        = 24
@@ -142,7 +143,9 @@ PRESCREEN_PROMPT = (
     "   If many headlines cover the same story (e.g. US/Israel/Iran), pick at most 2-3.\n"
     "   Always include at least one story from South Asia or Pakistan if one is present.\n\n"
     "Ignore: celebrity news, sports, lifestyle, weather, minor local stories.\n\n"
-    "Select 55-65 headlines total.\n"
+    "Select 40-50 headlines total — do not exceed 50.\n"
+    "Do not select more than 5 headlines from any single source.\n"
+    "If a source has many headlines on the same story, pick only the single best one.\n"
     "Return ONLY a JSON array of selected index numbers, e.g. [0, 3, 7, 12, ...].\n"
     "No explanation, no preamble - just the JSON array."
 )
@@ -235,7 +238,7 @@ def synthesize_briefing(items, client):
     log.info(f"Pass 2 - synthesizing {len(items)} curated headlines with Opus...")
     message = client.messages.create(
         model="claude-opus-4-5",
-        max_tokens=6000,
+        max_tokens=8000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -413,7 +416,7 @@ def send_email(html, date_str):
     msg            = MIMEMultipart("alternative")
     msg["Subject"] = f"The World in Brief — {date_str}"
     msg["From"]    = SMTP_USER
-    msg["To"]      = EMAIL_TO
+    msg["To"]      = ", ".join(EMAIL_TO)
     msg.attach(MIMEText(html, "html"))
 
     log.info(f"Sending to {EMAIL_TO}...")
@@ -421,7 +424,7 @@ def send_email(html, date_str):
         server.ehlo()
         server.starttls()
         server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, EMAIL_TO, msg.as_string())
+        server.sendmail(SMTP_USER, EMAIL_TO, msg.as_string())  # accepts a list
     log.info("Email sent.")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
