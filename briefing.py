@@ -36,11 +36,12 @@ EMAIL_TO          = [e.strip() for e in EMAIL_TO_RAW.split(",") if e.strip()]
 
 TARGET_WORD_COUNT = 1800
 HOURS_BACK        = 24
+FEED_TIMEOUT      = 20   # seconds before giving up on a slow/dead feed
 
 # ── News sources ──────────────────────────────────────────────────────────────
 
 RSS_FEEDS = {
-    # ── English: core global wires (keep as anchors) ──────────────────────────
+    # ── English: core global wires ────────────────────────────────────────────
     "BBC World":           "http://feeds.bbci.co.uk/news/world/rss.xml",
     "Al Jazeera (EN)":     "https://www.aljazeera.com/xml/rss/all.xml",
     "NYT World":           "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
@@ -52,20 +53,21 @@ RSS_FEEDS = {
     "Africanews":          "https://www.africanews.com/feed/rss",
     "Nikkei Asia":         "https://asia.nikkei.com/rss/feed/nar",
     "SCMP":                "https://www.scmp.com/rss/91/feed",
-    "Moscow Times":        "https://www.themoscowtimes.com/rss/news",  # independent Russian journalism
+    "Moscow Times":        "https://www.themoscowtimes.com/rss/news",
 
     # ── Arabic ────────────────────────────────────────────────────────────────
     "Al Jazeera (AR)":     "https://www.aljazeera.net/xml/rss/all.xml",
     "BBC Arabic":          "https://feeds.bbci.co.uk/arabic/rss.xml",
 
+    # ── English with non-Anglo editorial perspective ─────────────────────────
+    "France 24":           "https://www.france24.com/en/rss",
+
     # ── Spanish ───────────────────────────────────────────────────────────────
-    "El Pais":             "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada",
-    "La Jornada":          "https://www.jornada.com.mx/rss/edicion.xml",
     "BBC Mundo":           "https://feeds.bbci.co.uk/mundo/rss.xml",
 
     # ── French ────────────────────────────────────────────────────────────────
     "Le Monde (FR)":       "https://www.lemonde.fr/rss/une.xml",
-    "RFI":                 "https://www.rfi.fr/fr/rss",
+    "RFI":                 "https://www.rfi.fr/fr/rss",  # confirmed active
 
     # ── German ────────────────────────────────────────────────────────────────
     "Deutsche Welle (DE)": "https://rss.dw.com/rdf/rss-de-all",
@@ -85,12 +87,9 @@ RSS_FEEDS = {
     # ── Hindi ─────────────────────────────────────────────────────────────────
     "BBC Hindi":           "https://feeds.bbci.co.uk/hindi/rss.xml",
 
-    # ── State / official media (use biases strategically) ────────────────────
-    "TASS":                "https://tass.com/rss/v2.xml",        # Russian state wire
-    "RT":                  "https://www.rt.com/rss/news/",       # Russian state TV
-    "Xinhua":              "http://www.xinhuanet.com/english/rss/worldnews.xml",  # Chinese state wire
-    "CGTN":                "https://www.cgtn.com/subscribe/rss/rssfile.xml",     # Chinese state TV
-    "Global Times":        "https://www.globaltimes.cn/rss/outbrain.xml",        # Chinese nationalist tabloid
+    # ── State / official media ────────────────────────────────────────────────
+    "RT":                  "https://www.rt.com/rss/news/",       # Russian state TV — working
+    "People's Daily":      "http://en.people.cn/rss/world.xml",  # CPC organ — Chinese state view
 }
 
 # ── Step 1: Fetch headlines from the last 24 hours ────────────────────────────
@@ -111,7 +110,17 @@ def fetch_headlines():
 
     for source, url in RSS_FEEDS.items():
         try:
-            feed  = feedparser.parse(url)
+            feed  = feedparser.parse(url, request_headers={"User-Agent": "Mozilla/5.0"}, 
+                                     handlers=[feedparser.http.get_default_opener()])
+            # Apply timeout via socket — feedparser does not natively support timeout
+            import socket
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(FEED_TIMEOUT)
+            try:
+                feed = feedparser.parse(url)
+            finally:
+                socket.setdefaulttimeout(old_timeout)
+
             count = 0
             for entry in feed.entries:
                 pub, has_timestamp = parse_published(entry)
@@ -170,11 +179,15 @@ PRESCREEN_PROMPT = (
     "   - Corporate power, privatisation, austerity, and their social consequences\n\n"
     "NOTE: Sources are in multiple languages including Arabic, Spanish, French, German,\n"
     "Persian, Portuguese, Chinese, and Hindi. Treat all equally regardless of language.\n"
-    "State media (TASS, RT, Xinhua, CGTN) may surface stories that Western outlets ignore —\n"
-    "include these if genuinely newsworthy, especially on Global South, labour, or\n"
-    "anti-Western perspectives. Be aware each outlet has editorial biases.\n\n"
-    "RULE 3 - BREADTH: Ensure geographic spread across regions.\n"
-    "   Aim for: Americas, Europe, Middle East, Africa, South Asia, Southeast/East Asia.\n"
+    "State media (RT, People's Daily) may surface stories Western outlets ignore —\n"
+    "include these if genuinely newsworthy, especially on how non-Western states frame\n"
+    "global events, the Global South, or critiques of Western power. Be aware each\n"
+    "outlet has editorial biases — that is precisely what makes them useful.\n\n"
+    "RULE 3 - BREADTH: Ensure geographic spread AND some linguistic diversity.\n"
+    "   Geographic: Americas, Europe, Middle East, Africa, South Asia, Southeast/East Asia.\n"
+    "   Linguistic: at least 30% of your selected headlines must come from non-English\n"
+    "   sources (Arabic, Spanish, French, German, Persian, Portuguese, Chinese, Hindi).\n"
+    "   These sources are just as important as English ones and should not be crowded out.\n"
     "   If many headlines cover the same story (e.g. US/Israel/Iran), pick at most 2-3.\n"
     "   Always include at least one story from South Asia or Pakistan if one is present.\n\n"
     "Ignore: celebrity news, sports, lifestyle, weather, minor local stories.\n\n"
@@ -219,9 +232,12 @@ SYSTEM_PROMPT = (
     "  interests, and power into the prose — don't announce it. The reader should feel\n"
     "  the lens in the choice of facts and framing, not in explicit declarations.\n"
     "- Headlines come from sources in many languages. Translate and synthesise across\n"
-    "  them. Note when a story is covered differently by outlets with different editorial\n"
+    "  them freely. Aim for at least 30% of your footnote citations across the whole\n"
+    "  briefing to draw on non-English sources. Do not rely only on English-language\n"
+    "  outlets even when they cover the same story.\n"
+    "- Note when a story is covered differently by outlets with different editorial\n"
     "  perspectives (e.g. Western vs. Chinese vs. Russian media) — this divergence is\n"
-    "  itself informative and worth a sentence when relevant.\n"
+    "  itself worth a sentence when it illuminates something the dominant framing misses.\n"
     "- Do not editorialize explicitly. Do not end paragraphs with a sentence that draws\n"
     "  a moral or analytical conclusion for the reader. Trust the reported facts to speak.\n"
     "- Take social movements, strikes, protests, uprisings, and popular mobilisations\n"
