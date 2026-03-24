@@ -108,12 +108,9 @@ def fetch_headlines():
     cutoff    = utcnow() - datetime.timedelta(hours=HOURS_BACK)
     all_items = []
 
+    import socket
     for source, url in RSS_FEEDS.items():
         try:
-            feed  = feedparser.parse(url, request_headers={"User-Agent": "Mozilla/5.0"}, 
-                                     handlers=[feedparser.http.get_default_opener()])
-            # Apply timeout via socket — feedparser does not natively support timeout
-            import socket
             old_timeout = socket.getdefaulttimeout()
             socket.setdefaulttimeout(FEED_TIMEOUT)
             try:
