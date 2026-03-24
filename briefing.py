@@ -213,6 +213,8 @@ SYSTEM_PROMPT = (
     "    }\n"
     "  ]\n"
     "}\n\n"
+    "IMPORTANT: When quoting someone within a JSON string field, always use single quotes\n"
+    "e.g. Trump said 'very good' talks — never double quotes, which break JSON parsing.\n\n"
     "RULES:\n"
     "- Cover 9-12 stories. Always include at least one from South Asia or Pakistan if newsworthy.\n"
     "- Always include labour, social movement, or class struggle stories if present in the headlines.\n"
@@ -248,9 +250,15 @@ def synthesize_briefing(items, client):
     try:
         briefing = json.loads(raw)
     except json.JSONDecodeError as e:
-        log.error(f"JSON parse error: {e}")
-        log.error(f"Raw response (first 2000 chars):\n{raw[:2000]}")
-        raise
+        log.warning(f"JSON parse failed ({e}), attempting repair...")
+        try:
+            import json_repair
+            briefing = json_repair.loads(raw)
+            log.info("JSON repair succeeded")
+        except Exception as e2:
+            log.error(f"JSON repair also failed: {e2}")
+            log.error(f"Raw response (first 2000 chars):\n{raw[:2000]}")
+            raise e
     log.info(f"Pass 2 done - {len(briefing.get('stories', []))} stories written")
     return briefing
 
