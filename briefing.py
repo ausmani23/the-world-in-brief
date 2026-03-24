@@ -40,27 +40,57 @@ HOURS_BACK        = 24
 # ── News sources ──────────────────────────────────────────────────────────────
 
 RSS_FEEDS = {
-    # Global wires
-    "BBC World":          "http://feeds.bbci.co.uk/news/world/rss.xml",
-    "Al Jazeera":         "https://www.aljazeera.com/xml/rss/all.xml",
-    "NYT World":          "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
-    "The Guardian":       "https://www.theguardian.com/world/rss",
-    "FT World":           "https://www.ft.com/world?format=rss",
-    # South Asia
-    "Dawn Pakistan":      "https://www.dawn.com/feeds/home",
-    # Middle East
-    "Middle East Eye":    "https://www.middleeasteye.net/rss",
-    # Europe
-    "BBC Europe":         "http://feeds.bbci.co.uk/news/world/europe/rss.xml",
-    "Deutsche Welle":     "https://rss.dw.com/rdf/rss-en-world",
-    "Le Monde (English)": "https://www.lemonde.fr/en/rss/une.xml",
-    # Latin America
-    "Mercopress":         "https://en.mercopress.com/rss/latin-america",
-    # Africa
-    "Africanews":         "https://www.africanews.com/feed/rss",
-    # East Asia / Southeast Asia
-    "Nikkei Asia":        "https://asia.nikkei.com/rss/feed/nar",
-    "SCMP":               "https://www.scmp.com/rss/91/feed",
+    # ── English: core global wires (keep as anchors) ──────────────────────────
+    "BBC World":           "http://feeds.bbci.co.uk/news/world/rss.xml",
+    "Al Jazeera (EN)":     "https://www.aljazeera.com/xml/rss/all.xml",
+    "NYT World":           "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "The Guardian":        "https://www.theguardian.com/world/rss",
+    "FT World":            "https://www.ft.com/world?format=rss",
+    "Dawn Pakistan":       "https://www.dawn.com/feeds/home",
+    "Middle East Eye":     "https://www.middleeasteye.net/rss",
+    "Mercopress":          "https://en.mercopress.com/rss/latin-america",
+    "Africanews":          "https://www.africanews.com/feed/rss",
+    "Nikkei Asia":         "https://asia.nikkei.com/rss/feed/nar",
+    "SCMP":                "https://www.scmp.com/rss/91/feed",
+    "Moscow Times":        "https://www.themoscowtimes.com/rss/news",  # independent Russian journalism
+
+    # ── Arabic ────────────────────────────────────────────────────────────────
+    "Al Jazeera (AR)":     "https://www.aljazeera.net/xml/rss/all.xml",
+    "BBC Arabic":          "https://feeds.bbci.co.uk/arabic/rss.xml",
+
+    # ── Spanish ───────────────────────────────────────────────────────────────
+    "El Pais":             "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada",
+    "La Jornada":          "https://www.jornada.com.mx/rss/edicion.xml",
+    "BBC Mundo":           "https://feeds.bbci.co.uk/mundo/rss.xml",
+
+    # ── French ────────────────────────────────────────────────────────────────
+    "Le Monde (FR)":       "https://www.lemonde.fr/rss/une.xml",
+    "RFI":                 "https://www.rfi.fr/fr/rss",
+
+    # ── German ────────────────────────────────────────────────────────────────
+    "Deutsche Welle (DE)": "https://rss.dw.com/rdf/rss-de-all",
+    "Der Spiegel":         "https://www.spiegel.de/schlagzeilen/tops/index.rss",
+
+    # ── Persian/Farsi ─────────────────────────────────────────────────────────
+    "BBC Persian":         "https://feeds.bbci.co.uk/persian/rss.xml",
+
+    # ── Portuguese ────────────────────────────────────────────────────────────
+    "Folha de Sao Paulo":  "https://feeds.folha.uol.com.br/mundo/rss091.xml",
+    "BBC Brasil":          "https://feeds.bbci.co.uk/portuguese/rss.xml",
+
+    # ── Chinese (Mandarin) ────────────────────────────────────────────────────
+    "BBC Chinese":         "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
+    "DW Chinese":          "https://rss.dw.com/rdf/rss-chi-all",
+
+    # ── Hindi ─────────────────────────────────────────────────────────────────
+    "BBC Hindi":           "https://feeds.bbci.co.uk/hindi/rss.xml",
+
+    # ── State / official media (use biases strategically) ────────────────────
+    "TASS":                "https://tass.com/rss/v2.xml",        # Russian state wire
+    "RT":                  "https://www.rt.com/rss/news/",       # Russian state TV
+    "Xinhua":              "http://www.xinhuanet.com/english/rss/worldnews.xml",  # Chinese state wire
+    "CGTN":                "https://www.cgtn.com/subscribe/rss/rssfile.xml",     # Chinese state TV
+    "Global Times":        "https://www.globaltimes.cn/rss/outbrain.xml",        # Chinese nationalist tabloid
 }
 
 # ── Step 1: Fetch headlines from the last 24 hours ────────────────────────────
@@ -138,6 +168,11 @@ PRESCREEN_PROMPT = (
     "     protests, uprisings, riots, occupations, and popular mobilisations of any kind\n"
     "   - State power and its contestation: coups, crackdowns, mass movements, repression\n"
     "   - Corporate power, privatisation, austerity, and their social consequences\n\n"
+    "NOTE: Sources are in multiple languages including Arabic, Spanish, French, German,\n"
+    "Persian, Portuguese, Chinese, and Hindi. Treat all equally regardless of language.\n"
+    "State media (TASS, RT, Xinhua, CGTN) may surface stories that Western outlets ignore —\n"
+    "include these if genuinely newsworthy, especially on Global South, labour, or\n"
+    "anti-Western perspectives. Be aware each outlet has editorial biases.\n\n"
     "RULE 3 - BREADTH: Ensure geographic spread across regions.\n"
     "   Aim for: Americas, Europe, Middle East, Africa, South Asia, Southeast/East Asia.\n"
     "   If many headlines cover the same story (e.g. US/Israel/Iran), pick at most 2-3.\n"
@@ -183,6 +218,10 @@ SYSTEM_PROMPT = (
     "- Write with a materialist sensibility. Weave analysis of economic forces, class\n"
     "  interests, and power into the prose — don't announce it. The reader should feel\n"
     "  the lens in the choice of facts and framing, not in explicit declarations.\n"
+    "- Headlines come from sources in many languages. Translate and synthesise across\n"
+    "  them. Note when a story is covered differently by outlets with different editorial\n"
+    "  perspectives (e.g. Western vs. Chinese vs. Russian media) — this divergence is\n"
+    "  itself informative and worth a sentence when relevant.\n"
     "- Do not editorialize explicitly. Do not end paragraphs with a sentence that draws\n"
     "  a moral or analytical conclusion for the reader. Trust the reported facts to speak.\n"
     "- Take social movements, strikes, protests, uprisings, and popular mobilisations\n"
