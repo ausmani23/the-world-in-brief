@@ -54,42 +54,37 @@ RSS_FEEDS = {
     "Nikkei Asia":         "https://asia.nikkei.com/rss/feed/nar",
     "SCMP":                "https://www.scmp.com/rss/91/feed",
     "Moscow Times":        "https://www.themoscowtimes.com/rss/news",
-
-    # ── Arabic ────────────────────────────────────────────────────────────────
-    "Al Jazeera (AR)":     "https://www.aljazeera.net/xml/rss/all.xml",
-    "BBC Arabic":          "https://feeds.bbci.co.uk/arabic/rss.xml",
-
-    # ── English with non-Anglo editorial perspective ─────────────────────────
     "France 24":           "https://www.france24.com/en/rss",
 
-    # ── Spanish ───────────────────────────────────────────────────────────────
-    "BBC Mundo":           "https://feeds.bbci.co.uk/mundo/rss.xml",
+    # ── Arabic: genuine Arab editorial voices ─────────────────────────────────
+    "Al Jazeera (AR)":     "https://www.aljazeera.net/xml/rss/all.xml",
 
-    # ── French ────────────────────────────────────────────────────────────────
+    # ── Spanish: Latin American left perspective ──────────────────────────────
+    "Telesur":             "https://www.telesurenglish.net/rss/News.xml",
+
+    # ── French: genuine French editorial voices ───────────────────────────────
     "Le Monde (FR)":       "https://www.lemonde.fr/rss/une.xml",
-    "RFI":                 "https://www.rfi.fr/fr/rss",  # confirmed active
+    "RFI":                 "https://www.rfi.fr/fr/rss",
 
-    # ── German ────────────────────────────────────────────────────────────────
+    # ── German: genuine German editorial voices ───────────────────────────────
     "Deutsche Welle (DE)": "https://rss.dw.com/rdf/rss-de-all",
     "Der Spiegel":         "https://www.spiegel.de/schlagzeilen/tops/index.rss",
 
-    # ── Persian/Farsi ─────────────────────────────────────────────────────────
-    "BBC Persian":         "https://feeds.bbci.co.uk/persian/rss.xml",
+    # ── Persian/Farsi: Iranian state perspective ──────────────────────────────
+    "Tasnim News":         "https://www.tasnimnews.com/en/rss/feed/0/2/0/",
 
-    # ── Portuguese ────────────────────────────────────────────────────────────
+    # ── Portuguese: genuine Brazilian editorial voice ─────────────────────────
     "Folha de Sao Paulo":  "https://feeds.folha.uol.com.br/mundo/rss091.xml",
-    "BBC Brasil":          "https://feeds.bbci.co.uk/portuguese/rss.xml",
 
-    # ── Chinese (Mandarin) ────────────────────────────────────────────────────
-    "BBC Chinese":         "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
+    # ── Chinese (Mandarin): genuine Chinese editorial voice ───────────────────
     "DW Chinese":          "https://rss.dw.com/rdf/rss-chi-all",
 
-    # ── Hindi ─────────────────────────────────────────────────────────────────
-    "BBC Hindi":           "https://feeds.bbci.co.uk/hindi/rss.xml",
+    # ── Hindi: genuine Indian editorial voice ─────────────────────────────────
+    "Dainik Bhaskar":      "https://www.bhaskar.com/rss-v1--category-1061.xml",
 
-    # ── State / official media ────────────────────────────────────────────────
-    "RT":                  "https://www.rt.com/rss/news/",       # Russian state TV — working
-    "People's Daily":      "http://en.people.cn/rss/world.xml",  # CPC organ — Chinese state view
+    # ── State / official media (use biases strategically) ────────────────────
+    "RT":                  "https://www.rt.com/rss/news/",
+    "People's Daily":      "http://en.people.cn/rss/world.xml",
 }
 
 # ── Step 1: Fetch headlines from the last 24 hours ────────────────────────────
@@ -216,6 +211,43 @@ def prescreen_items(items, client):
     selected = [items[i] for i in selected_indices]
     log.info(f"Pass 1 done - {len(selected)} headlines selected")
     return selected
+
+# Sources that publish in non-English languages
+NON_ENGLISH_SOURCES = {
+    "Al Jazeera (AR)", "Telesur", "Le Monde (FR)", "RFI",
+    "Deutsche Welle (DE)", "Der Spiegel", "Tasnim News",
+    "Folha de Sao Paulo", "DW Chinese", "Dainik Bhaskar",
+}
+
+def enforce_language_floor(selected, all_items, floor=0.30):
+    """
+    Ensure at least `floor` fraction of selected items come from non-English sources.
+    If Haiku under-selected non-English items, top up by sampling from the full pool.
+    """
+    import random
+    non_eng = [i for i, x in enumerate(selected) if x["source"] in NON_ENGLISH_SOURCES]
+    target  = max(1, int(len(selected) * floor))
+
+    if len(non_eng) >= target:
+        log.info(f"Language floor met: {len(non_eng)}/{len(selected)} non-English items ({len(non_eng)/len(selected):.0%})")
+        return selected
+
+    # How many more do we need?
+    needed = target - len(non_eng)
+    log.info(f"Language floor not met: {len(non_eng)}/{len(selected)} non-English. Adding {needed} more...")
+
+    # Find non-English items in the full pool that weren't already selected
+    selected_titles = {x["title"] for x in selected}
+    candidates = [
+        x for x in all_items
+        if x["source"] in NON_ENGLISH_SOURCES
+        and x["title"] not in selected_titles
+    ]
+    random.shuffle(candidates)
+    additions = candidates[:needed]
+    result = selected + additions
+    log.info(f"After top-up: {target}/{len(result)} non-English items ({target/len(result):.0%})")
+    return result
 
 # -- Step 2b: Synthesize with Claude Opus (pass 2) ----------------------------
 
@@ -507,6 +539,9 @@ def run():
     if not curated:
         log.warning("Pre-screener returned nothing - falling back to all items")
         curated = items
+
+    # Enforce 30% non-English floor in code, not just in prompt
+    curated = enforce_language_floor(curated, items, floor=0.30)
 
     # Pass 2: Opus writes the full Economist-style briefing from curated headlines
     briefing = synthesize_briefing(curated, client)
