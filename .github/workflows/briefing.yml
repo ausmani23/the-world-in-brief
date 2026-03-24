@@ -3,7 +3,16 @@ name: Daily News Briefing
 on:
   schedule:
     - cron: '30 14 * * *'  # 10:30am EDT (UTC-4), change to '30 15 * * *' in November when clocks go back
-  workflow_dispatch:         # allows manual trigger from GitHub website
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Send to test (just you) or production (all subscribers)?'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - production
 
 jobs:
   run-briefing:
@@ -29,7 +38,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_TO: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'test' && secrets.EMAIL_DEV || secrets.EMAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: python briefing.py
