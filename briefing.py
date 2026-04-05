@@ -308,9 +308,30 @@ SYSTEM_PROMPT = (
     "- Return ONLY the JSON object. No preamble, no markdown fences, no extra text."
 )
 
-def synthesize_briefing(items, client):
+def synthesize_briefing(items, client, previous_briefing=None):
     today_str = datetime.date.today().strftime("%A, %B %d, %Y")
     headlines = items_to_text(items)
+
+    dedup_block = ""
+    if previous_briefing:
+        prev_stories = previous_briefing.get("stories", [])
+        prev_summary = json.dumps(
+            [{"headline": s["headline"], "region": s.get("region", ""),
+              "sentences": [sent["text"] for sent in s.get("sentences", [])]}
+             for s in prev_stories],
+            indent=2, ensure_ascii=False
+        )
+        dedup_block = (
+            "\n--- YESTERDAY'S BRIEFING ---\n"
+            "The following stories were covered in yesterday's briefing. Do NOT repeat a story\n"
+            "unless today's headlines contain genuinely new developments — new actions, reactions,\n"
+            "decisions, data, or escalations. If the only change is that additional outlets are now\n"
+            "covering the same facts, skip the story entirely. When a previously covered story does\n"
+            "have substantive new developments, cover it fully, focusing on what is new.\n\n"
+            f"{prev_summary}\n"
+            "--- END YESTERDAY ---\n\n"
+        )
+
     prompt = (
         f"Today is {today_str}. "
         "The following items were pre-selected as the most newsworthy from the last 24 hours.\n\n"
@@ -319,6 +340,7 @@ def synthesize_briefing(items, client):
         "--- HEADLINES ---\n"
         f"{headlines}\n"
         "--- END ---\n\n"
+        f"{dedup_block}"
         "Write the briefing JSON now. Return only the JSON object, nothing else."
     )
     log.info(f"Pass 2 - synthesizing {len(items)} curated headlines with Opus...")
@@ -519,11 +541,73 @@ def send_email(html, date_str):
         server.sendmail(SMTP_USER, EMAIL_TO, msg.as_string())  # accepts a list
     log.info("Email sent.")
 
+# ── Cache helpers ─────────────────────────────────────────────────────────────
+
+CACHE_DIR       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+CACHE_JSON      = os.path.join(CACHE_DIR, "briefing.json")
+OUTPUT_HTML     = os.path.join(CACHE_DIR, "briefing.html")
+CACHE_RETENTION = 14  # days to keep dated briefing files
+
+def save_cache(briefing):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(CACHE_JSON, "w", encoding="utf-8") as f:
+        json.dump(briefing, f, indent=2, ensure_ascii=False)
+    # Also save a date-stamped copy for dedup and weekly summaries
+    dated = os.path.join(CACHE_DIR, f"briefing_{datetime.date.today().isoformat()}.json")
+    with open(dated, "w", encoding="utf-8") as f:
+        json.dump(briefing, f, indent=2, ensure_ascii=False)
+    log.info(f"Cached briefing JSON to {CACHE_JSON} and {dated}")
+    cleanup_old_cache()
+
+def cleanup_old_cache():
+    """Remove dated briefing files older than CACHE_RETENTION days."""
+    import glob
+    cutoff = (datetime.date.today() - datetime.timedelta(days=CACHE_RETENTION)).isoformat()
+    for path in glob.glob(os.path.join(CACHE_DIR, "briefing_*.json")):
+        date_part = os.path.basename(path).replace("briefing_", "").replace(".json", "")
+        if date_part < cutoff:
+            os.remove(path)
+            log.info(f"Removed old cache file: {os.path.basename(path)}")
+
+def load_cache():
+    with open(CACHE_JSON, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def load_previous_briefing():
+    """Load the most recent dated briefing JSON before today, if any."""
+    import glob
+    today = datetime.date.today().isoformat()
+    files = sorted(glob.glob(os.path.join(CACHE_DIR, "briefing_*.json")))
+    # Find the latest file that isn't today's
+    for path in reversed(files):
+        basename = os.path.basename(path)
+        date_part = basename.replace("briefing_", "").replace(".json", "")
+        if date_part < today:
+            log.info(f"Found previous briefing: {basename}")
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    log.info("No previous briefing found — first run or cache cleared")
+    return None
+
+def save_html(html):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
+        f.write(html)
+    log.info(f"Saved HTML to {OUTPUT_HTML}")
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def run():
+def run(dry_run=False, cached=False):
     date_str = datetime.date.today().strftime("%A, %B %d, %Y")
     log.info(f"=== Daily Briefing --- {date_str} ===")
+
+    if cached:
+        log.info("Using cached briefing JSON (skipping fetch + API calls)")
+        briefing = load_cache()
+        html = build_html(briefing, date_str)
+        save_html(html)
+        log.info(f"Done! Open {OUTPUT_HTML} to preview.")
+        return
 
     # Fetch everything published in the last 24 hours across all sources
     items = fetch_headlines()
@@ -543,11 +627,29 @@ def run():
     # Enforce 30% non-English floor in code, not just in prompt
     curated = enforce_language_floor(curated, items, floor=0.30)
 
+    # Load yesterday's briefing (if any) so Opus can avoid stale repeats
+    previous = load_previous_briefing()
+
     # Pass 2: Opus writes the full Economist-style briefing from curated headlines
-    briefing = synthesize_briefing(curated, client)
+    briefing = synthesize_briefing(curated, client, previous_briefing=previous)
     html     = build_html(briefing, date_str)
-    send_email(html, date_str)
+
+    # Always cache the briefing JSON for --cached reruns
+    save_cache(briefing)
+
+    if dry_run:
+        save_html(html)
+        log.info(f"Dry run — email skipped. Open {OUTPUT_HTML} to preview.")
+    else:
+        send_email(html, date_str)
     log.info("Done!")
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(description="Daily News Briefing Agent")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run full pipeline but save HTML to file instead of emailing")
+    parser.add_argument("--cached", action="store_true",
+                        help="Re-render HTML from cached briefing JSON (skips fetch + API calls)")
+    args = parser.parse_args()
+    run(dry_run=args.dry_run, cached=args.cached)

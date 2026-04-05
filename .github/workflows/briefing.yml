@@ -33,6 +33,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Download previous briefings
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: briefing-cache
+          path: cache/
+          search_artifacts: true
+          if_no_artifact_found: warn
+
       - name: Run briefing
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -42,3 +50,11 @@ jobs:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: python briefing.py
+
+      - name: Upload briefing cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: briefing-cache
+          path: cache/briefing_*.json
+          retention-days: 14
