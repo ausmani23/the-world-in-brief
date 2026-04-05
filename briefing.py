@@ -88,6 +88,20 @@ RSS_FEEDS = {
     "Global Times":        "https://www.globaltimes.cn/rss/outbrain.xml",
 }
 
+# ── Right-wing sources (kept out of the general pool, used for
+#    "The View From the Right" section only) ──────────────────────────────────
+
+RIGHT_WING_FEEDS = {
+    "Fox News":            "https://moxie.foxnews.com/google-publisher/world.xml",
+    "Breitbart":           "https://feeds.feedburner.com/breitbart",
+    "Daily Wire":          "https://www.dailywire.com/feeds/rss.xml",
+    "NY Post":             "https://nypost.com/feed/",
+    "WSJ Opinion":         "https://feeds.a.dj.com/rss/RSSOpinion",
+    "The Telegraph":       "https://www.telegraph.co.uk/rss.xml",
+    "GB News":             "https://www.gbnews.com/feeds/rss",
+    "National Review":     "https://www.nationalreview.com/feed/",
+}
+
 # ── Step 1: Fetch headlines from the last 24 hours ────────────────────────────
 
 def utcnow():
@@ -100,12 +114,13 @@ def parse_published(entry):
         return datetime.datetime(*t[:6]), True
     return utcnow(), False
 
-def fetch_headlines():
+def fetch_headlines(feeds=None):
+    feeds     = feeds or RSS_FEEDS
     cutoff    = utcnow() - datetime.timedelta(hours=HOURS_BACK)
     all_items = []
 
     import socket
-    for source, url in RSS_FEEDS.items():
+    for source, url in feeds.items():
         try:
             old_timeout = socket.getdefaulttimeout()
             socket.setdefaulttimeout(FEED_TIMEOUT)
@@ -213,7 +228,7 @@ def prescreen_items(items, client):
     log.info(f"Pass 1 done - {len(selected)} headlines selected")
     return selected
 
-# State / official media — used for "View From the Other Side" section
+# State / official media — used for "View From Russia, China and Iran" section
 STATE_MEDIA_SOURCES = {"RT", "CGTN", "Global Times"}
 
 # Sources that publish in non-English languages
@@ -307,14 +322,30 @@ SYSTEM_PROMPT = (
     "    \"footnotes\": [\n"
     "      { \"n\": 1, \"name\": \"RT\", \"url\": \"https://...\" }\n"
     "    ]\n"
+    "  },\n"
+    "  \"right_wing\": {\n"
+    "    \"sentences\": [\n"
+    "      { \"text\": \"Sentence with footnote.[1]\", \"refs\": [1] }\n"
+    "    ],\n"
+    "    \"footnotes\": [\n"
+    "      { \"n\": 1, \"name\": \"Fox News\", \"url\": \"https://...\" }\n"
+    "    ]\n"
     "  }\n"
     "}\n\n"
-    "THE 'OTHER_SIDE' SECTION — 'The View From the Other Side':\n"
+    "THE 'OTHER_SIDE' SECTION — 'The View From Russia, China and Iran':\n"
     "This section summarises what state media (RT, People's Daily, Tasnim News, etc.) are\n"
     "saying about the REST OF THE WORLD — not about their own governments. What narratives\n"
     "are they pushing about Western policy, global conflicts, or the international order?\n"
     "Write 3-4 sentences with footnotes citing the state media sources. If no state media\n"
     "headlines are provided, set other_side to null.\n\n"
+    "THE 'RIGHT_WING' SECTION — 'The View From the Right':\n"
+    "This section summarises what conservative and right-wing outlets (Fox News, Breitbart,\n"
+    "Daily Wire, Wall Street Journal opinion, National Review, NY Post, GB News, The Telegraph,\n"
+    "etc.) are paying attention to and how they are framing it. What stories dominate their\n"
+    "coverage? What narratives are they advancing about domestic politics, culture, the economy,\n"
+    "or international affairs? Note divergences from mainstream or left-leaning coverage when\n"
+    "illuminating. Write 3-4 sentences with footnotes citing the right-wing sources. If no\n"
+    "right-wing headlines are provided, set right_wing to null.\n\n"
     "IMPORTANT: When quoting someone within a JSON string field, always use single quotes\n"
     "e.g. Trump said 'very good' talks — never double quotes, which break JSON parsing.\n\n"
     "RULES:\n"
@@ -326,7 +357,7 @@ SYSTEM_PROMPT = (
     "- Return ONLY the JSON object. No preamble, no markdown fences, no extra text."
 )
 
-def synthesize_briefing(items, client, previous_briefing=None, state_media_items=None):
+def synthesize_briefing(items, client, previous_briefing=None, state_media_items=None, right_wing_items=None):
     today_str = datetime.date.today().strftime("%A, %B %d, %Y")
     headlines = items_to_text(items)
 
@@ -354,11 +385,22 @@ def synthesize_briefing(items, client, previous_briefing=None, state_media_items
     if state_media_items:
         state_media_text = items_to_text(state_media_items)
         state_media_block = (
-            "\n--- STATE MEDIA HEADLINES (for 'The View From the Other Side') ---\n"
+            "\n--- STATE MEDIA HEADLINES (for 'The View From Russia, China and Iran') ---\n"
             "Use these for the other_side section. Focus on what these outlets are saying\n"
             "about the rest of the world, not about their own governments.\n\n"
             f"{state_media_text}\n"
             "--- END STATE MEDIA ---\n\n"
+        )
+
+    right_wing_block = ""
+    if right_wing_items:
+        right_wing_text = items_to_text(right_wing_items)
+        right_wing_block = (
+            "\n--- RIGHT-WING HEADLINES (for 'The View From the Right') ---\n"
+            "Use these for the right_wing section. What are these outlets paying attention to\n"
+            "and how are they framing it? Note divergences from mainstream coverage.\n\n"
+            f"{right_wing_text}\n"
+            "--- END RIGHT-WING ---\n\n"
         )
 
     prompt = (
@@ -370,6 +412,7 @@ def synthesize_briefing(items, client, previous_briefing=None, state_media_items
         f"{headlines}\n"
         "--- END ---\n\n"
         f"{state_media_block}"
+        f"{right_wing_block}"
         f"{dedup_block}"
         "Write the briefing JSON now. Return only the JSON object, nothing else."
     )
@@ -491,7 +534,7 @@ def build_html(briefing, date_str):
           {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{footnotes_html}</p>' if footnotes_html else ""}
         </div>"""
 
-    # "The View From the Other Side" section — styled like a regular story
+    # "The View From Russia, China and Iran" section — styled like a regular story
     other_side_html = ""
     other_side = briefing.get("other_side")
     if other_side and other_side.get("sentences"):
@@ -504,7 +547,7 @@ def build_html(briefing, date_str):
               <td style="background:#333;color:#fff;font-size:9px;font-weight:700;
                          letter-spacing:0.1em;text-transform:uppercase;padding:3px 9px;
                          border-radius:2px;font-family:Arial,sans-serif;white-space:nowrap;">
-                The View From the Other Side
+                The View From Russia, China and Iran
               </td>
             </tr>
           </table>
@@ -515,7 +558,31 @@ def build_html(briefing, date_str):
           {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{os_footnotes}</p>' if os_footnotes else ""}
         </div>"""
 
-    source_list  = ", ".join(RSS_FEEDS.keys())
+    # "The View From the Right" section
+    right_wing_html = ""
+    right_wing = briefing.get("right_wing")
+    if right_wing and right_wing.get("sentences"):
+        rw_body = render_body(right_wing.get("sentences", []))
+        rw_footnotes = render_footnotes(right_wing.get("footnotes", []))
+        right_wing_html = f"""
+        <div style="margin-bottom:26px;padding-top:24px;border-top:1px solid #e8e8e8;">
+          <table cellpadding="0" cellspacing="0" style="margin-bottom:10px;">
+            <tr>
+              <td style="background:#8b1a1a;color:#fff;font-size:9px;font-weight:700;
+                         letter-spacing:0.1em;text-transform:uppercase;padding:3px 9px;
+                         border-radius:2px;font-family:Arial,sans-serif;white-space:nowrap;">
+                The View From the Right
+              </td>
+            </tr>
+          </table>
+          <p style="margin:0 0 8px 0;font-size:14.5px;line-height:1.75;color:#2a2a2a;
+                    font-family:Georgia,'Times New Roman',serif;">
+            {rw_body}
+          </p>
+          {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{rw_footnotes}</p>' if rw_footnotes else ""}
+        </div>"""
+
+    source_list  = ", ".join(list(RSS_FEEDS.keys()) + list(RIGHT_WING_FEEDS.keys()))
     generated_at = utcnow().strftime("%H:%M UTC")
 
     return f"""<!DOCTYPE html>
@@ -563,6 +630,7 @@ def build_html(briefing, date_str):
     <tr><td style="background:#fff;padding:30px 32px 10px;">
       {stories_html}
       {other_side_html}
+      {right_wing_html}
     </td></tr>
 
     <tr><td style="background:#f0ede6;padding:18px 32px;border-top:1px solid #ddd;border-radius:0 0 4px 4px;">
@@ -670,6 +738,10 @@ def run(dry_run=False, cached=False):
         log.error("No headlines fetched. Aborting.")
         return
 
+    # Fetch right-wing sources separately (not in the general pool)
+    right_wing_items = fetch_headlines(feeds=RIGHT_WING_FEEDS)
+    log.info(f"Right-wing items fetched: {len(right_wing_items)}")
+
     # Single shared API client for both passes
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -682,13 +754,13 @@ def run(dry_run=False, cached=False):
     # Enforce 30% non-English floor in code, not just in prompt
     curated = enforce_language_floor(curated, items, floor=0.30)
 
-    # Collect state media items not already in the curated set for "The View From the Other Side"
+    # Collect state media items not already in the curated set for "The View From Russia, China and Iran"
     curated_titles = {x["title"] for x in curated}
     state_media_extra = [
         x for x in items
         if x["source"] in STATE_MEDIA_SOURCES and x["title"] not in curated_titles
     ]
-    log.info(f"State media items for 'Other Side': {len(state_media_extra)} "
+    log.info(f"State media items for 'Russia/China/Iran': {len(state_media_extra)} "
              f"(plus any already in curated pool)")
 
     # Load yesterday's briefing (if any) so Opus can avoid stale repeats
@@ -696,7 +768,8 @@ def run(dry_run=False, cached=False):
 
     # Pass 2: Opus writes the full Economist-style briefing from curated headlines
     briefing = synthesize_briefing(curated, client, previous_briefing=previous,
-                                   state_media_items=state_media_extra)
+                                   state_media_items=state_media_extra,
+                                   right_wing_items=right_wing_items)
     html     = build_html(briefing, date_str)
 
     # Always cache the briefing JSON for --cached reruns
