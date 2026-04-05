@@ -70,8 +70,8 @@ RSS_FEEDS = {
     "Deutsche Welle (DE)": "https://rss.dw.com/rdf/rss-de-all",
     "Der Spiegel":         "https://www.spiegel.de/schlagzeilen/tops/index.rss",
 
-    # ── Persian/Farsi: Iranian state perspective ──────────────────────────────
-    "Tasnim News":         "https://www.tasnimnews.com/en/rss/feed/0/2/0/",
+    # ── Persian/Farsi: Iranian state perspective (Tasnim DNS unreachable) ──────
+    # "Tasnim News":       "https://www.tasnimnews.com/en/rss/feed/0/2/0/",
 
     # ── Portuguese: genuine Brazilian editorial voice ─────────────────────────
     "Folha de Sao Paulo":  "https://feeds.folha.uol.com.br/mundo/rss091.xml",
@@ -84,7 +84,8 @@ RSS_FEEDS = {
 
     # ── State / official media (use biases strategically) ────────────────────
     "RT":                  "https://www.rt.com/rss/news/",
-    "People's Daily":      "http://en.people.cn/rss/world.xml",
+    "CGTN":                "https://www.cgtn.com/subscribe/rss/section/world.xml",
+    "Global Times":        "https://www.globaltimes.cn/rss/outbrain.xml",
 }
 
 # ── Step 1: Fetch headlines from the last 24 hours ────────────────────────────
@@ -212,10 +213,13 @@ def prescreen_items(items, client):
     log.info(f"Pass 1 done - {len(selected)} headlines selected")
     return selected
 
+# State / official media — used for "View From the Other Side" section
+STATE_MEDIA_SOURCES = {"RT", "CGTN", "Global Times"}
+
 # Sources that publish in non-English languages
 NON_ENGLISH_SOURCES = {
     "Al Jazeera (AR)", "Telesur", "Le Monde (FR)", "RFI",
-    "Deutsche Welle (DE)", "Der Spiegel", "Tasnim News",
+    "Deutsche Welle (DE)", "Der Spiegel",
     "Folha de Sao Paulo", "DW Chinese", "Dainik Bhaskar",
 }
 
@@ -295,8 +299,22 @@ SYSTEM_PROMPT = (
     "        { \"n\": 2, \"name\": \"Source Name\", \"url\": \"https://...\" }\n"
     "      ]\n"
     "    }\n"
-    "  ]\n"
+    "  ],\n"
+    "  \"other_side\": {\n"
+    "    \"sentences\": [\n"
+    "      { \"text\": \"Sentence with footnote.[1]\", \"refs\": [1] }\n"
+    "    ],\n"
+    "    \"footnotes\": [\n"
+    "      { \"n\": 1, \"name\": \"RT\", \"url\": \"https://...\" }\n"
+    "    ]\n"
+    "  }\n"
     "}\n\n"
+    "THE 'OTHER_SIDE' SECTION — 'The View From the Other Side':\n"
+    "This section summarises what state media (RT, People's Daily, Tasnim News, etc.) are\n"
+    "saying about the REST OF THE WORLD — not about their own governments. What narratives\n"
+    "are they pushing about Western policy, global conflicts, or the international order?\n"
+    "Write 3-4 sentences with footnotes citing the state media sources. If no state media\n"
+    "headlines are provided, set other_side to null.\n\n"
     "IMPORTANT: When quoting someone within a JSON string field, always use single quotes\n"
     "e.g. Trump said 'very good' talks — never double quotes, which break JSON parsing.\n\n"
     "RULES:\n"
@@ -308,7 +326,7 @@ SYSTEM_PROMPT = (
     "- Return ONLY the JSON object. No preamble, no markdown fences, no extra text."
 )
 
-def synthesize_briefing(items, client, previous_briefing=None):
+def synthesize_briefing(items, client, previous_briefing=None, state_media_items=None):
     today_str = datetime.date.today().strftime("%A, %B %d, %Y")
     headlines = items_to_text(items)
 
@@ -332,6 +350,17 @@ def synthesize_briefing(items, client, previous_briefing=None):
             "--- END YESTERDAY ---\n\n"
         )
 
+    state_media_block = ""
+    if state_media_items:
+        state_media_text = items_to_text(state_media_items)
+        state_media_block = (
+            "\n--- STATE MEDIA HEADLINES (for 'The View From the Other Side') ---\n"
+            "Use these for the other_side section. Focus on what these outlets are saying\n"
+            "about the rest of the world, not about their own governments.\n\n"
+            f"{state_media_text}\n"
+            "--- END STATE MEDIA ---\n\n"
+        )
+
     prompt = (
         f"Today is {today_str}. "
         "The following items were pre-selected as the most newsworthy from the last 24 hours.\n\n"
@@ -340,6 +369,7 @@ def synthesize_briefing(items, client, previous_briefing=None):
         "--- HEADLINES ---\n"
         f"{headlines}\n"
         "--- END ---\n\n"
+        f"{state_media_block}"
         f"{dedup_block}"
         "Write the briefing JSON now. Return only the JSON object, nothing else."
     )
@@ -461,6 +491,30 @@ def build_html(briefing, date_str):
           {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{footnotes_html}</p>' if footnotes_html else ""}
         </div>"""
 
+    # "The View From the Other Side" section — styled like a regular story
+    other_side_html = ""
+    other_side = briefing.get("other_side")
+    if other_side and other_side.get("sentences"):
+        os_body = render_body(other_side.get("sentences", []))
+        os_footnotes = render_footnotes(other_side.get("footnotes", []))
+        other_side_html = f"""
+        <div style="margin-bottom:26px;padding-top:24px;border-top:1px solid #e8e8e8;">
+          <table cellpadding="0" cellspacing="0" style="margin-bottom:10px;">
+            <tr>
+              <td style="background:#333;color:#fff;font-size:9px;font-weight:700;
+                         letter-spacing:0.1em;text-transform:uppercase;padding:3px 9px;
+                         border-radius:2px;font-family:Arial,sans-serif;white-space:nowrap;">
+                The View From the Other Side
+              </td>
+            </tr>
+          </table>
+          <p style="margin:0 0 8px 0;font-size:14.5px;line-height:1.75;color:#2a2a2a;
+                    font-family:Georgia,'Times New Roman',serif;">
+            {os_body}
+          </p>
+          {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{os_footnotes}</p>' if os_footnotes else ""}
+        </div>"""
+
     source_list  = ", ".join(RSS_FEEDS.keys())
     generated_at = utcnow().strftime("%H:%M UTC")
 
@@ -508,6 +562,7 @@ def build_html(briefing, date_str):
 
     <tr><td style="background:#fff;padding:30px 32px 10px;">
       {stories_html}
+      {other_side_html}
     </td></tr>
 
     <tr><td style="background:#f0ede6;padding:18px 32px;border-top:1px solid #ddd;border-radius:0 0 4px 4px;">
@@ -530,7 +585,7 @@ def send_email(html, date_str):
     msg            = MIMEMultipart("alternative")
     msg["Subject"] = f"The World in Brief — {date_str}"
     msg["From"]    = SMTP_USER
-    msg["To"]      = ", ".join(EMAIL_TO)
+    msg["Bcc"]     = ", ".join(EMAIL_TO)
     msg.attach(MIMEText(html, "html"))
 
     log.info(f"Sending to {EMAIL_TO}...")
@@ -627,11 +682,21 @@ def run(dry_run=False, cached=False):
     # Enforce 30% non-English floor in code, not just in prompt
     curated = enforce_language_floor(curated, items, floor=0.30)
 
+    # Collect state media items not already in the curated set for "The View From the Other Side"
+    curated_titles = {x["title"] for x in curated}
+    state_media_extra = [
+        x for x in items
+        if x["source"] in STATE_MEDIA_SOURCES and x["title"] not in curated_titles
+    ]
+    log.info(f"State media items for 'Other Side': {len(state_media_extra)} "
+             f"(plus any already in curated pool)")
+
     # Load yesterday's briefing (if any) so Opus can avoid stale repeats
     previous = load_previous_briefing()
 
     # Pass 2: Opus writes the full Economist-style briefing from curated headlines
-    briefing = synthesize_briefing(curated, client, previous_briefing=previous)
+    briefing = synthesize_briefing(curated, client, previous_briefing=previous,
+                                   state_media_items=state_media_extra)
     html     = build_html(briefing, date_str)
 
     # Always cache the briefing JSON for --cached reruns
