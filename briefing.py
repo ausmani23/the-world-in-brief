@@ -14,7 +14,12 @@ import json
 import smtplib
 import logging
 import datetime
+import hashlib
+import concurrent.futures
 import feedparser
+import requests
+import trafilatura
+import htmldate
 import anthropic
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -153,6 +158,419 @@ def fetch_headlines(feeds=None):
     log.info(f"Total items fetched: {len(all_items)}")
     return all_items
 
+# ── Article extraction (trafilatura) ──────────────────────────────────────────
+#
+# Helper for fetching the title + first few paragraphs of any article URL.
+# Used by the homepage-scrape pipeline below to read articles from sources that
+# don't publish working RSS feeds (Iranian outlets, Chinese-language papers,
+# etc.). We *never* pass full bodies downstream: the newsletter is a survey
+# tool, not a summary, so only the opening paragraphs go into Claude's context.
+
+ARTICLE_CACHE_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "articles")
+ARTICLE_MAX_PARAGRAPHS = 5         # ~3-5 grafs ≈ 300-500 words
+ARTICLE_FETCH_TIMEOUT  = 15        # seconds per URL
+ARTICLE_FETCH_WORKERS  = 10
+ARTICLE_CACHE_DAYS     = 14
+ARTICLE_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
+
+def _article_cache_path(url):
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()
+    return os.path.join(ARTICLE_CACHE_DIR, f"{h}.json")
+
+def _load_cached_article(url):
+    path = _article_cache_path(url)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        text = data.get("text") or None
+        if text is None:
+            return None
+        return {"text": text, "date": data.get("date")}
+    except Exception:
+        return None
+
+def _save_cached_article(url, text, date_str=None):
+    os.makedirs(ARTICLE_CACHE_DIR, exist_ok=True)
+    try:
+        with open(_article_cache_path(url), "w", encoding="utf-8") as f:
+            json.dump({"url": url, "text": text, "date": date_str,
+                       "fetched_at": utcnow().isoformat()},
+                      f, ensure_ascii=False)
+    except Exception as e:
+        log.debug(f"  cache write failed for {url}: {e}")
+
+def _cleanup_old_articles():
+    if not os.path.isdir(ARTICLE_CACHE_DIR):
+        return
+    cutoff = utcnow() - datetime.timedelta(days=ARTICLE_CACHE_DAYS)
+    for name in os.listdir(ARTICLE_CACHE_DIR):
+        path = os.path.join(ARTICLE_CACHE_DIR, name)
+        try:
+            mtime = datetime.datetime.utcfromtimestamp(os.path.getmtime(path))
+            if mtime < cutoff:
+                os.remove(path)
+        except Exception:
+            pass
+
+def fetch_article_text(url):
+    """
+    Fetch a URL, extract the main article text + publication date with
+    trafilatura's bare_extraction(). Returns {"text": ..., "date": "YYYY-MM-DD"
+    or None} on success, None on failure. Cached per-URL.
+    """
+    if not url:
+        return None
+    cached = _load_cached_article(url)
+    if cached is not None:
+        return cached
+    try:
+        resp = requests.get(url, headers={"User-Agent": ARTICLE_UA},
+                            timeout=ARTICLE_FETCH_TIMEOUT, allow_redirects=True)
+        if resp.status_code != 200 or not resp.text:
+            return None
+        result = trafilatura.bare_extraction(
+            resp.text,
+            include_comments=False,
+            include_tables=False,
+            favor_precision=False,
+        )
+        if not result or not getattr(result, "text", None):
+            return None
+        text = result.text
+        paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+        truncated = "\n\n".join(paragraphs[:ARTICLE_MAX_PARAGRAPHS]).strip()
+        if not truncated:
+            return None
+        date_str = getattr(result, "date", None)  # "YYYY-MM-DD" or None
+        # Fallback: htmldate is more aggressive — checks meta tags, <time>
+        # elements, JSON-LD, and text patterns that trafilatura may skip.
+        if not date_str:
+            try:
+                date_str = htmldate.find_date(
+                    resp.text, extensive_search=True, original_date=True
+                )
+            except Exception:
+                pass
+        _save_cached_article(url, truncated, date_str)
+        return {"text": truncated, "date": date_str}
+    except Exception as e:
+        log.debug(f"  trafilatura fetch failed for {url}: {e}")
+        return None
+
+# ── Homepage scrape pipeline ──────────────────────────────────────────────────
+#
+# For news sources that lack a working RSS feed (especially non-English
+# outlets), we scrape the homepage instead. The pipeline per source is:
+#   1. Fetch the homepage HTML with requests + desktop UA
+#   2. Extract + rank candidate links using DOM position and URL heuristics
+#   3. For each candidate, call fetch_article_text() to get title + grafs
+#      and publication date via trafilatura's bare_extraction()
+#   4. Keep only articles published within the last 24h (skip undated ones)
+#   5. Emit items in the same shape as fetch_headlines() so they slot into
+#      the existing prescreening pool
+#
+# No API calls needed — trafilatura's extraction quality is the natural
+# filter (non-article pages yield no text), and its date metadata enforces
+# the 24h recency window.
+
+# Sources to scrape via homepage. The dict maps display name → homepage URL.
+# Curated jointly with the user from regions/languages where RSS coverage is
+# weak. JS-only sites (Press TV, etc.) may quietly fail — that's fine, they'll
+# be silently skipped.
+SCRAPE_SOURCES = {
+    # ── Africa ────────────────────────────────────────────────────────────────
+    "Jeune Afrique":         "https://www.jeuneafrique.com/",
+    # "Le Monde Afrique":    "https://www.lemonde.fr/afrique/",   # 402 paywall on bare GET
+    "Al-Ahram":              "https://www.ahram.org.eg/",
+    "Daily Nation":          "https://nation.africa/kenya",
+
+    # ── Latin America ─────────────────────────────────────────────────────────
+    "La Jornada":            "https://www.jornada.com.mx/",
+    "Página/12":             "https://www.pagina12.com.ar/",
+    "Granma":                "https://www.granma.cu/",
+
+    # ── Middle East (Arab world) ──────────────────────────────────────────────
+    "Asharq Al-Awsat":       "https://aawsat.com/",
+    # "Al-Akhbar":           "https://al-akhbar.com/",            # 403 Cloudflare challenge
+    # "Al Mayadeen":         "https://www.almayadeen.net/",       # 403 Cloudflare challenge
+    "Haaretz":               "https://www.haaretz.co.il/",
+
+    # ── Iran ──────────────────────────────────────────────────────────────────
+    # Iranian outlets are mostly broken to bare HTTP — JS-rendered SPAs or DNS
+    # failures. Press TV and Tehran Times work; the others need a real browser.
+    "Press TV":              "https://www.presstv.ir/",
+    # "Tasnim News":         "https://www.tasnimnews.com/fa",     # connection failure
+    # "IRNA":                "https://www.irna.ir/",              # 200 but JS-only (1.7KB shell)
+    "Tehran Times":          "https://www.tehrantimes.com/",
+
+    # ── East Asia ─────────────────────────────────────────────────────────────
+    "People's Daily":        "http://www.people.com.cn/",
+    "Xinhua":                "http://www.news.cn/",
+    # "The Paper":           "https://www.thepaper.cn/",          # 403 bot block
+    "Asahi Shimbun":         "https://www.asahi.com/",
+    "Hankyoreh":             "https://www.hani.co.kr/",
+
+    # ── South / Southeast Asia ────────────────────────────────────────────────
+    "Kompas":                "https://www.kompas.com/",
+    "The Hindu":              "https://www.thehindu.com/",
+
+    # ── Europe (continental) ──────────────────────────────────────────────────
+    "El País":               "https://elpais.com/",
+    "La Repubblica":         "https://www.repubblica.it/",
+    "Gazeta Wyborcza":       "https://wyborcza.pl/",
+
+    # ── Russia / former USSR ──────────────────────────────────────────────────
+    # "TASS":                "https://tass.ru/",                   # 200 but JS-only (1.7KB shell)
+    "Kommersant":            "https://www.kommersant.ru/",
+    "Novaya Gazeta Europe":  "https://novayagazeta.eu/",
+
+    # ── Turkey ────────────────────────────────────────────────────────────────
+    "Hürriyet":              "https://www.hurriyet.com.tr/",
+    "Cumhuriyet":            "https://www.cumhuriyet.com.tr/",
+}
+
+# Scrape sources whose primary publication language is not English.
+# Used (alongside the existing NON_ENGLISH_SOURCES set below) to count toward
+# the 30% non-English language floor enforced after prescreening.
+NON_ENGLISH_SCRAPE_SOURCES = {
+    name for name in SCRAPE_SOURCES
+    if name not in {"Daily Nation", "The Hindu", "Press TV", "Tehran Times"}
+}
+
+SCRAPE_LINKS_PER_SOURCE   = 8     # how many article links to keep per source
+SCRAPE_MAX_CANDIDATES     = 40    # top-ranked candidates to try trafilatura on
+SCRAPE_HOMEPAGE_TIMEOUT   = 15
+SCRAPE_SOURCE_WORKERS     = 6     # no more Haiku rate-limit concern
+SCRAPE_ARTICLE_WORKERS    = 5     # parallel article fetches within one source
+
+def _extract_date_from_url(url):
+    """
+    Try to extract a publication date from common URL patterns like
+    /2026/04/10/ or /2026-04-10/ or /20260410/. Returns a datetime.date
+    or None.
+    """
+    # /YYYY/MM/DD/ or /YYYY-MM-DD/
+    m = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:/|$|\?|-)', url)
+    if m:
+        try:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    # /YYYYMMDD/ (compact, e.g. People's Daily)
+    m = re.search(r'/(\d{4})(\d{2})(\d{2})(?:/|$|\?|\.)', url)
+    if m:
+        try:
+            d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            # Sanity: must be a plausible news date (2020–next year)
+            if 2020 <= d.year <= datetime.date.today().year + 1:
+                return d
+        except ValueError:
+            pass
+    return None
+
+
+def _is_within_24h(d):
+    """Check if a date is today or yesterday (covers the 24h window)."""
+    today = datetime.date.today()
+    return d >= today - datetime.timedelta(days=1)
+
+
+# Ancestor tags that signal navigational / non-article context
+_NAV_ANCESTORS = {'nav', 'header', 'footer', 'aside'}
+# URL path segments that indicate non-article pages
+_SKIP_URL_PATTERNS = re.compile(
+    r'/(category|tag|author|video|podcast|gallery|photo|login|signup|subscribe'
+    r'|account|privacy|contact|about|rss|feed|search|archive)(/|$)', re.I
+)
+# URL path segments that suggest article pages
+_ARTICLE_URL_PATTERNS = re.compile(
+    r'/(article|news|story|opinion|report|analysis|editorial|feature|noticia'
+    r'|actualite|nachricht|articolo|materia)', re.I
+)
+
+
+def _extract_link_candidates(html_content, base_url):
+    """
+    Parse homepage HTML and return a ranked list of (anchor_text, absolute_url)
+    pairs most likely to be article links. Uses DOM position and URL heuristics
+    to prioritize — no API calls needed. Pre-filters by URL date when available,
+    rejecting links clearly older than 24h.
+    """
+    from urllib.parse import urljoin, urlparse
+    try:
+        from lxml import html as lxml_html
+        tree = lxml_html.fromstring(html_content)
+    except Exception:
+        return []
+
+    base_domain = urlparse(base_url).netloc.replace('www.', '')
+    raw = []
+    seen = set()
+
+    for a in tree.xpath('//a[@href]'):
+        href = (a.get('href') or '').strip()
+        if not href or href.startswith('#') or href.startswith('javascript:') or href.startswith('mailto:'):
+            continue
+        url = urljoin(base_url, href)
+        if not url.startswith('http'):
+            continue
+        # Skip links to other domains
+        link_domain = urlparse(url).netloc.replace('www.', '')
+        if link_domain != base_domain:
+            continue
+        # Skip known non-article URL patterns
+        if _SKIP_URL_PATTERNS.search(url):
+            continue
+
+        text = ' '.join((a.text_content() or '').split()).strip()
+        if len(text) < 15 or len(text) > 250:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+
+        # ── URL date filter: reject links clearly older than 24h ──
+        url_date = _extract_date_from_url(url)
+        if url_date and not _is_within_24h(url_date):
+            continue
+
+        # ── Score the candidate ──
+        score = 0
+
+        # Prefer links inside <main> or <article> elements
+        in_nav = False
+        parent = a.getparent()
+        while parent is not None:
+            tag = parent.tag if isinstance(parent.tag, str) else ''
+            if tag in ('main', 'article', 'section'):
+                score += 3
+            if tag in _NAV_ANCESTORS:
+                in_nav = True
+            parent = parent.getparent()
+        if in_nav:
+            score -= 5
+
+        # URL looks like an article
+        if _ARTICLE_URL_PATTERNS.search(url):
+            score += 2
+        # URL has a recent date in it
+        if url_date:
+            score += 3
+
+        raw.append((score, text, url))
+
+    # Sort by score descending, then by document order (stable sort preserves
+    # insertion order for equal scores, so prominent top-of-page links win)
+    raw.sort(key=lambda x: -x[0])
+    return [(text, url) for _, text, url in raw[:SCRAPE_MAX_CANDIDATES]]
+
+def fetch_homepage_items(source_name, homepage_url):
+    """
+    Scrape one homepage source: fetch homepage HTML, rank candidate links using
+    DOM/URL heuristics, fetch each candidate with trafilatura until we have
+    SCRAPE_LINKS_PER_SOURCE articles confirmed within the last 24h.
+    No API calls — trafilatura's extraction quality is the filter.
+    Returns items in fetch_headlines() shape, [] on failure.
+    """
+    try:
+        resp = requests.get(homepage_url, headers={"User-Agent": ARTICLE_UA},
+                            timeout=SCRAPE_HOMEPAGE_TIMEOUT, allow_redirects=True)
+        if resp.status_code != 200 or not resp.text:
+            log.warning(f"  {source_name}: homepage returned {resp.status_code}")
+            return []
+        candidates = _extract_link_candidates(resp.text, homepage_url)
+        if not candidates:
+            log.warning(f"  {source_name}: no candidate links extracted (likely JS-only)")
+            return []
+    except Exception as e:
+        log.warning(f"  {source_name}: homepage fetch failed: {e}")
+        return []
+
+    # Fetch candidates with trafilatura. Date-filter using the extracted
+    # publication date; skip articles older than 24h or with no date at all.
+    items = []
+    skipped_no_date = 0
+    skipped_old = 0
+    skipped_no_text = 0
+
+    def _try_article(candidate):
+        title, url = candidate
+        result = fetch_article_text(url)
+        if not result:
+            return ("no_text", None)
+        # Check publication date — prefer trafilatura's extracted date,
+        # fall back to URL date pattern
+        date_str = result.get("date")
+        article_date = None
+        if date_str:
+            try:
+                article_date = datetime.date.fromisoformat(date_str)
+            except (ValueError, TypeError):
+                pass
+        if article_date is None:
+            article_date = _extract_date_from_url(url)
+        if article_date is None:
+            return ("no_date", None)
+        if not _is_within_24h(article_date):
+            return ("old", None)
+        snippet = result["text"].replace("\n\n", " ").strip()[:300]
+        return ("ok", {
+            "source":    source_name,
+            "title":     title,
+            "summary":   snippet,
+            "link":      url,
+            "published": date_str or "recent",
+        })
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=SCRAPE_ARTICLE_WORKERS) as ex:
+        futures = {ex.submit(_try_article, c): c for c in candidates}
+        for future in concurrent.futures.as_completed(futures):
+            status, item = future.result()
+            if status == "ok":
+                items.append(item)
+                if len(items) >= SCRAPE_LINKS_PER_SOURCE:
+                    break
+            elif status == "no_date":
+                skipped_no_date += 1
+            elif status == "old":
+                skipped_old += 1
+            else:
+                skipped_no_text += 1
+
+    log.info(f"  {source_name}: {len(items)} items | skipped: {skipped_no_text} no-text, "
+             f"{skipped_old} old, {skipped_no_date} no-date")
+    return items
+
+
+def fetch_scraped_items(sources=None):
+    """
+    Run fetch_homepage_items across all SCRAPE_SOURCES in parallel. Returns a
+    flat list of items in the same shape as fetch_headlines().
+    No API client needed — scraping is purely HTTP + trafilatura.
+    """
+    sources = sources if sources is not None else SCRAPE_SOURCES
+    if not sources:
+        return []
+    log.info(f"Scraping {len(sources)} non-RSS sources...")
+    _cleanup_old_articles()
+    all_items = []
+
+    def _scrape_one(item):
+        name, url = item
+        return fetch_homepage_items(name, url)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=SCRAPE_SOURCE_WORKERS) as ex:
+        for items in ex.map(_scrape_one, sources.items()):
+            all_items.extend(items)
+    log.info(f"Total scraped items: {len(all_items)}")
+    return all_items
+
 def items_to_text(items):
     by_source = {}
     for item in items:
@@ -206,17 +624,32 @@ PRESCREEN_PROMPT = (
     "No explanation, no preamble - just the JSON array."
 )
 
-def prescreen_items(items, client):
+def prescreen_items(items, client, previous_briefing=None):
     # Pass 1: send titles only to Haiku; get back the most newsworthy subset
     title_lines = [f"{i}: [{item['source']}] {item['title']}" for i, item in enumerate(items)]
     titles_text = "\n".join(title_lines)
+
+    dedup_block = ""
+    if previous_briefing:
+        prev_headlines = [s["headline"] for s in previous_briefing.get("stories", [])]
+        if prev_headlines:
+            prev_list = "\n".join(f"  - {h}" for h in prev_headlines)
+            dedup_block = (
+                "\n\nRULE 4 - AVOID DUPLICATES: Yesterday's briefing already covered these stories:\n"
+                f"{prev_list}\n"
+                "Do NOT select headlines that cover the same story unless the headline clearly\n"
+                "indicates a genuinely new development (new actions, reactions, data, escalations).\n"
+                "If in doubt, skip it — today's briefing should feel fresh.\n"
+            )
+
     log.info(f"Pass 1 - pre-screening {len(items)} headlines with Haiku...")
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1000,
         messages=[{
             "role": "user",
-            "content": PRESCREEN_PROMPT + "\n\n--- HEADLINES ---\n" + titles_text + "\n--- END ---"
+            "content": PRESCREEN_PROMPT + dedup_block +
+                       "\n\n--- HEADLINES ---\n" + titles_text + "\n--- END ---"
         }],
     )
     raw = message.content[0].text.strip()
@@ -231,31 +664,35 @@ def prescreen_items(items, client):
 # State / official media — used for "View From Russia, China and Iran" section
 STATE_MEDIA_SOURCES = {"RT", "CGTN", "Global Times"}
 
-# Sources that publish in non-English languages
+# Sources that publish in non-English languages.
+# Includes both RSS sources (top set) and the non-English entries from
+# SCRAPE_SOURCES (added via | NON_ENGLISH_SCRAPE_SOURCES).
 NON_ENGLISH_SOURCES = {
     "Al Jazeera (AR)", "Telesur", "Le Monde (FR)", "RFI",
     "Deutsche Welle (DE)", "Der Spiegel",
     "Folha de Sao Paulo", "DW Chinese", "Dainik Bhaskar",
-}
+} | NON_ENGLISH_SCRAPE_SOURCES
 
 def enforce_language_floor(selected, all_items, floor=0.30):
     """
-    Ensure at least `floor` fraction of selected items come from non-English sources.
-    If Haiku under-selected non-English items, top up by sampling from the full pool.
+    Ensure at least `floor` fraction of the FINAL list comes from non-English
+    sources. Solves for the right number of additions so the ratio is met after
+    the list grows: needed = ceil((floor * S - N) / (1 - floor)), where S is
+    the original size and N is the current non-English count.
     """
-    import random
-    non_eng = [i for i, x in enumerate(selected) if x["source"] in NON_ENGLISH_SOURCES]
-    target  = max(1, int(len(selected) * floor))
+    import math, random
+    n_non_eng = sum(1 for x in selected if x["source"] in NON_ENGLISH_SOURCES)
+    s = len(selected)
 
-    if len(non_eng) >= target:
-        log.info(f"Language floor met: {len(non_eng)}/{len(selected)} non-English items ({len(non_eng)/len(selected):.0%})")
+    if s > 0 and n_non_eng / s >= floor:
+        log.info(f"Language floor met: {n_non_eng}/{s} non-English items ({n_non_eng/s:.0%})")
         return selected
 
-    # How many more do we need?
-    needed = target - len(non_eng)
-    log.info(f"Language floor not met: {len(non_eng)}/{len(selected)} non-English. Adding {needed} more...")
+    # Solve: (n_non_eng + needed) / (s + needed) >= floor
+    needed = max(1, math.ceil((floor * s - n_non_eng) / (1 - floor)))
+    log.info(f"Language floor not met: {n_non_eng}/{s} non-English ({n_non_eng/s:.0%} < {floor:.0%}). "
+             f"Adding {needed} non-English items...")
 
-    # Find non-English items in the full pool that weren't already selected
     selected_titles = {x["title"] for x in selected}
     candidates = [
         x for x in all_items
@@ -265,7 +702,8 @@ def enforce_language_floor(selected, all_items, floor=0.30):
     random.shuffle(candidates)
     additions = candidates[:needed]
     result = selected + additions
-    log.info(f"After top-up: {target}/{len(result)} non-English items ({target/len(result):.0%})")
+    final_non_eng = n_non_eng + len(additions)
+    log.info(f"After top-up: {final_non_eng}/{len(result)} non-English items ({final_non_eng/len(result):.0%})")
     return result
 
 # -- Step 2b: Synthesize with Claude Opus (pass 2) ----------------------------
@@ -582,7 +1020,9 @@ def build_html(briefing, date_str):
           {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{rw_footnotes}</p>' if rw_footnotes else ""}
         </div>"""
 
-    source_list  = ", ".join(list(RSS_FEEDS.keys()) + list(RIGHT_WING_FEEDS.keys()))
+    source_list  = ", ".join(
+        list(RSS_FEEDS.keys()) + list(SCRAPE_SOURCES.keys()) + list(RIGHT_WING_FEEDS.keys())
+    )
     generated_at = utcnow().strftime("%H:%M UTC")
 
     return f"""<!DOCTYPE html>
@@ -732,21 +1172,34 @@ def run(dry_run=False, cached=False):
         log.info(f"Done! Open {OUTPUT_HTML} to preview.")
         return
 
-    # Fetch everything published in the last 24 hours across all sources
+    # Single shared API client — used by the prescreen (Haiku) and synthesis
+    # (Opus) passes. Homepage scraping no longer needs it.
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    # Fetch everything published in the last 24 hours across all RSS sources
     items = fetch_headlines()
+
+    # Supplement with sources that don't have working RSS feeds — homepage
+    # scrape via trafilatura (no API calls, date-filtered to last 24h).
+    # These items join the main pool and go through prescreening alongside RSS.
+    scraped = fetch_scraped_items()
+    items.extend(scraped)
+    log.info(f"Total items in pool (RSS + scraped): {len(items)}")
+
     if not items:
-        log.error("No headlines fetched. Aborting.")
+        log.error("No items fetched. Aborting.")
         return
 
     # Fetch right-wing sources separately (not in the general pool)
     right_wing_items = fetch_headlines(feeds=RIGHT_WING_FEEDS)
     log.info(f"Right-wing items fetched: {len(right_wing_items)}")
 
-    # Single shared API client for both passes
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    # Load yesterday's briefing (if any) — used by both Haiku (prescreen dedup)
+    # and Opus (synthesis dedup) to avoid stale repeats
+    previous = load_previous_briefing()
 
     # Pass 1: Haiku quickly picks the ~40 most newsworthy headlines
-    curated = prescreen_items(items, client)
+    curated = prescreen_items(items, client, previous_briefing=previous)
     if not curated:
         log.warning("Pre-screener returned nothing - falling back to all items")
         curated = items
@@ -762,9 +1215,6 @@ def run(dry_run=False, cached=False):
     ]
     log.info(f"State media items for 'Russia/China/Iran': {len(state_media_extra)} "
              f"(plus any already in curated pool)")
-
-    # Load yesterday's briefing (if any) so Opus can avoid stale repeats
-    previous = load_previous_briefing()
 
     # Pass 2: Opus writes the full Economist-style briefing from curated headlines
     briefing = synthesize_briefing(curated, client, previous_briefing=previous,

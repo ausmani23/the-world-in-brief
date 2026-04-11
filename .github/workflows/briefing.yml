@@ -2,7 +2,7 @@ name: Daily News Briefing
 
 on:
   schedule:
-    - cron: '30 14 * * *'  # 10:30am EDT (UTC-4), change to '30 15 * * *' in November when clocks go back
+    - cron: '30 16 * * *'  # 12:30pm EDT (UTC-4); mornings are sacred — never before noon ET. Change to '30 17 * * *' in November when clocks go back to EST.
   workflow_dispatch:
     inputs:
       mode:
