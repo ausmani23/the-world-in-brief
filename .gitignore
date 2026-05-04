@@ -3,3 +3,6 @@ subscribers.txt
 cache/
 *.log
 __pycache__/
+.claude/
+claude_workspace/
+memory/

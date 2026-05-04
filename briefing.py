@@ -130,7 +130,10 @@ def fetch_headlines(feeds=None):
             old_timeout = socket.getdefaulttimeout()
             socket.setdefaulttimeout(FEED_TIMEOUT)
             try:
-                feed = feedparser.parse(url)
+                # Pass a real-browser UA — feedparser's default UA is blocked by
+                # several feeds we want (Polycrisis, Geoeconomics, Substack-on-
+                # custom-domain, n+1, Catalyst, etc.) behind anti-bot services.
+                feed = feedparser.parse(url, agent=ARTICLE_UA)
             finally:
                 socket.setdefaulttimeout(old_timeout)
 

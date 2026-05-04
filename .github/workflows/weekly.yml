@@ -1,0 +1,62 @@
+name: Weekly Digest
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'  # Sunday 2pm EDT (UTC-4); change to '0 19 * * 0' in November when clocks go back to EST.
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Send to test (just you) or production (all subscribers)?'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - production
+
+jobs:
+  run-weekly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download previous "seen" cache
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: weekly-cache
+          path: cache/
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Run weekly digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          # Weekly uses its own subscriber list (EMAIL_WEEKLY), distinct from
+          # the daily's EMAIL_TO. Test mode falls back to EMAIL_DEV (just you).
+          EMAIL_TO: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'test' && secrets.EMAIL_DEV || secrets.EMAIL_WEEKLY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        run: python weekly.py
+
+      - name: Upload weekly cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-cache
+          path: cache/weekly_seen.json
+          retention-days: 90
