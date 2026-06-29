@@ -860,10 +860,15 @@ def synthesize_briefing(items, client, previous_briefing=None, state_media_items
     log.info(f"Pass 2 - synthesizing {len(items)} curated headlines with Opus...")
     message = client.messages.create(
         model="claude-opus-4-5",
-        max_tokens=8000,
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
+    if message.stop_reason == "max_tokens":
+        log.warning(
+            "Opus hit max_tokens — briefing JSON was truncated and the tail "
+            "(e.g. 'View From' sections) may be missing. Consider raising max_tokens."
+        )
     raw = message.content[0].text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)

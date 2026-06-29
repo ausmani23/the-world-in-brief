@@ -332,10 +332,15 @@ def synthesise(items, client):
     log.info(f"Pass 2 — synthesising {len(items)} items with Opus...")
     msg = client.messages.create(
         model="claude-opus-4-5",
-        max_tokens=8000,
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
+    if msg.stop_reason == "max_tokens":
+        log.warning(
+            "Opus hit max_tokens — digest JSON was truncated and the tail "
+            "may be missing. Consider raising max_tokens."
+        )
     raw = msg.content[0].text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
