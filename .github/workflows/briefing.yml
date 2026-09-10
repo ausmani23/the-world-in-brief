@@ -39,7 +39,20 @@ jobs:
           name: briefing-cache
           path: cache/
           search_artifacts: true
+          workflow_conclusion: ""   # latest artifact even if the previous run failed
           if_no_artifact_found: warn
+
+      # Reader runs first so briefing.py can render today's picks. A reader
+      # failure must never block the briefing (continue-on-error). Test mode
+      # dry-runs: scores are cached but nothing is sent to Instapaper.
+      - name: Run reader
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INSTAPAPER_USER: ${{ secrets.INSTAPAPER_USER }}
+          INSTAPAPER_PASSWORD: ${{ secrets.INSTAPAPER_PASSWORD }}
+        run: python reader.py ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'test' && '--dry-run' || '' }}
 
       - name: Run briefing
         env:
@@ -56,5 +69,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: briefing-cache
-          path: cache/briefing_*.json
+          path: |
+            cache/briefing_*.json
+            cache/reader_state.json
           retention-days: 14

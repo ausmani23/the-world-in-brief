@@ -4,7 +4,7 @@ name: Keepalive
 # activity in the repository. Daily briefing runs and artifact uploads do NOT
 # count as activity — only commits do. This workflow pushes one empty commit a
 # month, which resets that 60-day timer for every scheduled workflow in the repo
-# (briefing.yml and weekly.yml), so they never get auto-disabled.
+# (briefing.yml), so it never gets auto-disabled.
 
 on:
   schedule:

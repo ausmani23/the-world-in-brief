@@ -15,6 +15,7 @@ import smtplib
 import logging
 import datetime
 import hashlib
+import html as html_mod
 import concurrent.futures
 import feedparser
 import requests
@@ -119,10 +120,15 @@ def parse_published(entry):
         return datetime.datetime(*t[:6]), True
     return utcnow(), False
 
-def fetch_headlines(feeds=None):
-    feeds     = feeds or RSS_FEEDS
-    cutoff    = utcnow() - datetime.timedelta(hours=HOURS_BACK)
-    all_items = []
+def fetch_headlines(feeds=None, hours_back=None):
+    """Pull items from RSS feeds published within the last `hours_back` hours
+    (default: module HOURS_BACK). Items carry `published` (display string),
+    `published_iso` (ISO datetime or None), and `content` (tag-stripped full
+    post body when the feed includes one — Substack / WordPress do)."""
+    feeds      = feeds or RSS_FEEDS
+    hours_back = hours_back or HOURS_BACK
+    cutoff     = utcnow() - datetime.timedelta(hours=hours_back)
+    all_items  = []
 
     import socket
     for source, url in feeds.items():
@@ -142,19 +148,26 @@ def fetch_headlines(feeds=None):
                 pub, has_timestamp = parse_published(entry)
                 if has_timestamp and pub < cutoff:
                     continue
-                title   = entry.get("title", "").strip()
+                title   = html_mod.unescape(entry.get("title", "")).strip()
                 summary = re.sub(r"<[^>]+>", "", entry.get("summary", "")).strip()[:300]
                 link    = entry.get("link", "")
                 pub_str = pub.strftime("%H:%M UTC") if has_timestamp else "recent"
+                content = ""
+                if entry.get("content"):
+                    raw = entry["content"][0].get("value", "") or ""
+                    content = html_mod.unescape(re.sub(r"<[^>]+>", " ", raw))
+                    content = re.sub(r"[ \t]+", " ", content).strip()
                 all_items.append({
-                    "source":    source,
-                    "title":     title,
-                    "summary":   summary,
-                    "link":      link,
-                    "published": pub_str,
+                    "source":        source,
+                    "title":         title,
+                    "summary":       summary,
+                    "link":          link,
+                    "published":     pub_str,
+                    "published_iso": pub.isoformat() if has_timestamp else None,
+                    "content":       content,
                 })
                 count += 1
-            log.info(f"  {source}: {count} items in last {HOURS_BACK}h")
+            log.info(f"  {source}: {count} items in last {hours_back}h")
         except Exception as e:
             log.error(f"Failed to fetch {source}: {e}")
 
@@ -943,7 +956,58 @@ def render_body(sentences):
         parts.append(text)
     return " ".join(parts)
 
-def build_html(briefing, date_str):
+READER_COLOR = "#a8741a"  # warm gold — "Worth Your Time" section
+
+def render_reader_section(picks):
+    """Numbered list of the day's reader.py picks (source, title, one-line reason).
+    Returns "" when there are no picks so the daily is unchanged without them."""
+    if not picks:
+        return ""
+    rows = ""
+    for i, it in enumerate(picks):
+        n = i + 1
+        url = it.get("url") or "#"
+        title = it.get("title", "")
+        source = it.get("source", "")
+        reason = it.get("reason", "")
+        is_last = i == len(picks) - 1
+        border = "" if is_last else "border-bottom:1px solid #e8e8e8;"
+        rows += f"""
+        <div style="margin-bottom:16px;padding-bottom:14px;{border}">
+          <table cellpadding="0" cellspacing="0" style="width:100%;">
+            <tr>
+              <td style="vertical-align:top;width:32px;padding-right:14px;">
+                <div style="font-family:Georgia,serif;font-size:22px;font-weight:700;color:{READER_COLOR};line-height:1;">{n}</div>
+              </td>
+              <td style="vertical-align:top;">
+                <p style="margin:0 0 3px 0;font-size:10px;color:#888;font-family:Arial,sans-serif;letter-spacing:0.1em;text-transform:uppercase;">
+                  {source}
+                </p>
+                <p style="margin:0 0 5px 0;font-size:15px;font-weight:700;line-height:1.3;font-family:Georgia,'Times New Roman',serif;">
+                  <a href="{url}" style="color:#1a1a1a;text-decoration:none;">{title}</a>
+                </p>
+                <p style="margin:0;font-size:13px;line-height:1.6;color:#3a3a3a;font-family:Georgia,'Times New Roman',serif;">
+                  {reason}
+                </p>
+              </td>
+            </tr>
+          </table>
+        </div>"""
+    return f"""
+        <div style="margin-bottom:16px;padding-top:24px;border-top:2px solid {READER_COLOR};">
+          <table cellpadding="0" cellspacing="0" style="margin-bottom:14px;">
+            <tr>
+              <td style="background:{READER_COLOR};color:#fff;font-size:9px;font-weight:700;
+                         letter-spacing:0.15em;text-transform:uppercase;padding:3px 9px;
+                         border-radius:2px;font-family:Arial,sans-serif;white-space:nowrap;">
+                Worth Your Time
+              </td>
+            </tr>
+          </table>
+          {rows}
+        </div>"""
+
+def build_html(briefing, date_str, picks=None):
     stories_html = ""
     stories      = briefing.get("stories", [])
     for i, story in enumerate(stories):
@@ -1028,6 +1092,8 @@ def build_html(briefing, date_str):
           {f'<p style="margin:0;font-size:11px;color:#999;font-family:Arial,sans-serif;line-height:1.8;">{rw_footnotes}</p>' if rw_footnotes else ""}
         </div>"""
 
+    reader_html = render_reader_section(picks)
+
     source_list  = ", ".join(
         list(RSS_FEEDS.keys()) + list(SCRAPE_SOURCES.keys()) + list(RIGHT_WING_FEEDS.keys())
     )
@@ -1079,6 +1145,7 @@ def build_html(briefing, date_str):
       {stories_html}
       {other_side_html}
       {right_wing_html}
+      {reader_html}
     </td></tr>
 
     <tr><td style="background:#f0ede6;padding:18px 32px;border-top:1px solid #ddd;border-radius:0 0 4px 4px;">
@@ -1166,6 +1233,25 @@ def save_html(html):
         f.write(html)
     log.info(f"Saved HTML to {OUTPUT_HTML}")
 
+READER_STATE_JSON = os.path.join(CACHE_DIR, "reader_state.json")
+
+def load_reader_picks():
+    """Today's picks from reader.py (run just before the briefing in the same
+    job). Returns a list or None. The briefing never depends on reader.py —
+    a missing/stale file simply means no 'Worth Your Time' section."""
+    try:
+        with open(READER_STATE_JSON, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        picks = state.get("picks", {}).get(datetime.date.today().isoformat())
+        if picks:
+            log.info(f"Loaded {len(picks)} reader picks for today")
+        return picks or None
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        log.warning(f"Could not read reader picks: {e}")
+        return None
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run(dry_run=False, cached=False):
@@ -1175,7 +1261,7 @@ def run(dry_run=False, cached=False):
     if cached:
         log.info("Using cached briefing JSON (skipping fetch + API calls)")
         briefing = load_cache()
-        html = build_html(briefing, date_str)
+        html = build_html(briefing, date_str, picks=load_reader_picks())
         save_html(html)
         log.info(f"Done! Open {OUTPUT_HTML} to preview.")
         return
@@ -1228,7 +1314,7 @@ def run(dry_run=False, cached=False):
     briefing = synthesize_briefing(curated, client, previous_briefing=previous,
                                    state_media_items=state_media_extra,
                                    right_wing_items=right_wing_items)
-    html     = build_html(briefing, date_str)
+    html     = build_html(briefing, date_str, picks=load_reader_picks())
 
     # Always cache the briefing JSON for --cached reruns
     save_cache(briefing)
